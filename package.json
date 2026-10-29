@@ -1,0 +1,37 @@
+{
+  "name": "sealform",
+  "version": "0.1.0",
+  "description": "Self-hosted electronic signatures with a tamper-evident, independently verifiable audit trail.",
+  "license": "MIT",
+  "author": "Keehan",
+  "type": "module",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "SECURITY.md"
+  ],
+  "exports": {
+    "./core": {
+      "types": "./dist/core/index.d.ts",
+      "default": "./dist/core/index.js"
+    }
+  },
+  "bin": {
+    "sealform": "./dist/cli/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "secrets": "node scripts/check-secrets.mjs",
+    "test": "node --experimental-strip-types --disable-warning=ExperimentalWarning --test \"test/**/*.test.ts\"",
+    "check": "npm run secrets && npm run typecheck && npm test"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "typescript": "^7.0.2"
+  }
+}

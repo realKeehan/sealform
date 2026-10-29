@@ -1,0 +1,22 @@
+node_modules/
+dist/
+
+# Operator data and secrets. Never commit any of these.
+data/
+keys/
+outbox/
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+*.pfx
+*.jwk.json
+*.sqlite
+*.sqlite-*
+*.db
+.secretscan-blocklist
+
+.DS_Store
+Thumbs.db
