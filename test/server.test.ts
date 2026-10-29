@@ -262,6 +262,23 @@ test('names outside the PDF fonts still sign; the PDF marks them', async () => {
   }
 });
 
+test('signers who cannot draw can sign by typing; the record says so', async () => {
+  const app = await start('typed');
+  try {
+    const doc = await open(app.url);
+    const ok = await post(app.url, submission(doc, { signature: { mode: 'typed', typedName: 'Ada Example', vector: [], png: png() } }));
+    assert.equal(ok.status, 201, await ok.clone().text());
+    const { id } = (await ok.json()) as { id: string };
+    assert.equal((app.sealform.store.getEntry(id) as SealformRecord).signature.mode, 'typed');
+
+    const doc2 = await open(app.url);
+    const bad = await post(app.url, submission(doc2, { signature: { mode: 'typed', typedName: 'Ada Example', vector: [{ points: [{ x: 1, y: 1, time: 1 }] }], png: png() } }));
+    assert.equal(bad.status, 422);
+  } finally {
+    await app.stop();
+  }
+});
+
 test('public keys are served for verification', async () => {
   const app = await start('keys');
   try {

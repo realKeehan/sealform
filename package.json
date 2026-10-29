@@ -10,7 +10,17 @@
   },
   "homepage": "https://github.com/realKeehan/sealform#readme",
   "bugs": "https://github.com/realKeehan/sealform/issues",
-  "keywords": ["e-signature", "esign", "audit-trail", "tamper-evident", "ed25519", "sha-256", "ueta", "esign-act", "eidas"],
+  "keywords": [
+    "e-signature",
+    "esign",
+    "audit-trail",
+    "tamper-evident",
+    "ed25519",
+    "sha-256",
+    "ueta",
+    "esign-act",
+    "eidas"
+  ],
   "type": "module",
   "engines": {
     "node": ">=22.13"
@@ -29,24 +39,34 @@
     "./server": {
       "types": "./dist/server/index.d.ts",
       "default": "./dist/server/index.js"
-    }
+    },
+    "./client": {
+      "types": "./dist/client/index.d.ts",
+      "default": "./dist/client/index.js"
+    },
+    "./client/bundle": "./dist/client/sealform.js",
+    "./client/style.css": "./dist/client/sealform.css"
   },
   "bin": {
     "sealform": "./dist/cli/index.js"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && node scripts/build-client.mjs",
     "prepack": "npm run build",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json",
     "secrets": "node scripts/check-secrets.mjs",
     "test": "node --experimental-strip-types --disable-warning=ExperimentalWarning --test \"test/**/*.test.ts\"",
-    "check": "npm run secrets && npm run typecheck && npm test"
+    "check": "npm run secrets && npm run typecheck && npm test",
+    "demo": "node --experimental-strip-types --disable-warning=ExperimentalWarning examples/demo/server.ts"
   },
   "devDependencies": {
     "@types/node": "^26.6.6",
+    "esbuild": "^0.28.2",
+    "sass": "^1.107.0",
     "typescript": "^7.0.2"
   },
   "dependencies": {
-    "pdf-lib": "1.17.1"
+    "pdf-lib": "1.17.1",
+    "signature_pad": "5.1.4"
   }
 }

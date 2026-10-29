@@ -1,0 +1,352 @@
+// sealform signing form. Theme it from the host site by setting these on .sf or an ancestor:
+//   --sf-ink, --sf-muted, --sf-surface, --sf-paper, --sf-line, --sf-accent, --sf-accent-ink,
+//   --sf-danger, --sf-radius, --sf-font, --sf-mono, --sf-doc-height
+
+.sf {
+  --_ink: var(--sf-ink, #14141c);
+  --_muted: var(--sf-muted, #5b5b66);
+  --_surface: var(--sf-surface, #ffffff);
+  --_paper: var(--sf-paper, #f6f5f2);
+  --_line: var(--sf-line, #c9c7c1);
+  --_accent: var(--sf-accent, #2f6f4f);
+  --_accent-ink: var(--sf-accent-ink, #ffffff);
+  --_danger: var(--sf-danger, #b3261e);
+  --_radius: var(--sf-radius, 10px);
+
+  color: var(--_ink);
+  font-family: var(--sf-font, inherit);
+  line-height: 1.5;
+
+  *,
+  *::before,
+  *::after {
+    box-sizing: border-box;
+  }
+
+  [hidden] {
+    display: none !important;
+  }
+}
+
+.sf-form > * + * {
+  margin-top: 1.25rem;
+}
+
+.sf-title {
+  margin: 0;
+  font-size: 1.6rem;
+  line-height: 1.2;
+}
+
+.sf-meta,
+.sf-help,
+.sf-req {
+  color: var(--_muted);
+  font-size: 0.875rem;
+}
+
+.sf-meta {
+  margin: 0.25rem 0 0;
+}
+
+.sf-lang {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0.5rem 0 0;
+
+  // Doubled class beats the generic `.sf select` rule below.
+  &.sf-lang select {
+    width: auto;
+    min-height: 2.25rem;
+    padding-block: 0.3rem;
+  }
+}
+
+.sf-document {
+  max-height: var(--sf-doc-height, 26rem);
+  overflow-y: auto;
+  padding: 1rem 1.25rem;
+  background: var(--_paper);
+  border: 1px solid var(--_line);
+  border-radius: var(--_radius);
+  overscroll-behavior: contain;
+
+  h3,
+  h4,
+  h5,
+  h6 {
+    margin: 1.25rem 0 0.5rem;
+    line-height: 1.25;
+  }
+  > :first-child {
+    margin-top: 0;
+  }
+  p,
+  ul,
+  ol {
+    margin: 0 0 0.75rem;
+  }
+}
+
+.sf-disclosure {
+  padding: 0.75rem 1rem;
+  background: var(--_paper);
+  border: 1px solid var(--_line);
+  border-radius: var(--_radius);
+
+  summary {
+    cursor: pointer;
+    font-weight: 600;
+  }
+  > :not(summary) {
+    margin: 0.75rem 0 0;
+  }
+}
+
+.sf-fieldset {
+  margin-inline: 0;
+  padding: 1rem 1.25rem 1.25rem;
+  border: 1px solid var(--_line);
+  border-radius: var(--_radius);
+
+  legend {
+    padding: 0 0.4rem;
+    font-weight: 700;
+  }
+  > * + * {
+    margin-top: 1rem;
+  }
+}
+
+.sf-field {
+  display: grid;
+  gap: 0.3rem;
+
+  label {
+    font-weight: 600;
+  }
+  .sf-req {
+    font-weight: 400;
+  }
+  .sf-help {
+    margin: 0;
+  }
+}
+
+.sf input[type='text'],
+.sf input[type='email'],
+.sf select,
+.sf textarea {
+  width: 100%;
+  min-height: 2.75rem;
+  padding: 0.55rem 0.75rem;
+  color: var(--_ink);
+  font: inherit;
+  background: var(--_surface);
+  border: 1px solid var(--_line);
+  border-radius: calc(var(--_radius) * 0.6);
+}
+
+.sf input:focus-visible,
+.sf select:focus-visible,
+.sf textarea:focus-visible,
+.sf button:focus-visible,
+.sf a:focus-visible,
+.sf summary:focus-visible,
+.sf-document:focus-visible,
+.sf-summary:focus-visible,
+.sf-receipt:focus-visible {
+  outline: 3px solid var(--_accent);
+  outline-offset: 2px;
+}
+
+.sf [aria-invalid='true'] {
+  border-color: var(--_danger);
+  box-shadow: 0 0 0 1px var(--_danger);
+}
+
+.sf-check {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.25rem 0.65rem;
+  align-items: start;
+
+  input {
+    width: 1.25rem;
+    height: 1.25rem;
+    margin: 0.15rem 0 0;
+    accent-color: var(--_accent);
+  }
+  .sf-field-error {
+    grid-column: 2;
+  }
+}
+
+.sf-field-error {
+  margin: 0;
+  color: var(--_danger);
+  font-size: 0.875rem;
+  font-weight: 600;
+
+  &:empty {
+    display: none;
+  }
+}
+
+.sf-modes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+}
+
+.sf-mode {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+
+  input {
+    accent-color: var(--_accent);
+  }
+}
+
+.sf-pad {
+  position: relative;
+}
+
+.sf-canvas {
+  display: block;
+  width: 100%;
+  height: 11rem;
+  background: var(--_surface);
+  border: 2px dashed var(--_line);
+  border-radius: var(--_radius);
+  touch-action: none;
+}
+
+.sf-clear {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.5rem;
+  padding: 0.3rem 0.7rem;
+  color: var(--_muted);
+  font: inherit;
+  font-size: 0.875rem;
+  background: var(--_surface);
+  border: 1px solid var(--_line);
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.sf-typed-preview {
+  min-height: 4rem;
+  margin: 0;
+  padding: 0.75rem 1rem;
+  font-family: 'Segoe Script', 'Brush Script MT', 'Snell Roundhand', cursive;
+  font-size: 2rem;
+  font-style: italic;
+  background: var(--_surface);
+  border: 2px dashed var(--_line);
+  border-radius: var(--_radius);
+  overflow-wrap: anywhere;
+}
+
+.sf-summary {
+  padding: 0.75rem 1rem;
+  color: var(--_danger);
+  border: 2px solid var(--_danger);
+  border-radius: var(--_radius);
+
+  p {
+    margin: 0 0 0.35rem;
+    font-weight: 700;
+  }
+  ul {
+    margin: 0;
+    padding-left: 1.2rem;
+  }
+  a {
+    color: inherit;
+  }
+}
+
+.sf-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 1rem;
+}
+
+.sf-submit {
+  display: inline-block;
+  min-height: 2.9rem;
+  padding: 0.7rem 1.6rem;
+  color: var(--_accent-ink);
+  font: inherit;
+  font-weight: 700;
+  text-decoration: none;
+  background: var(--_accent);
+  border: 0;
+  border-radius: var(--_radius);
+  cursor: pointer;
+
+  &:disabled {
+    opacity: 0.6;
+    cursor: progress;
+  }
+}
+
+.sf-link {
+  color: var(--_accent);
+  font-weight: 600;
+}
+
+.sf-receipt {
+  padding: 1.5rem 1.75rem;
+  background: var(--_paper);
+  border: 1px solid var(--_line);
+  border-radius: var(--_radius);
+
+  > * {
+    margin: 0;
+  }
+  > * + * {
+    margin-top: 1rem;
+  }
+}
+
+.sf-receipt-facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.35rem 1rem;
+  margin: 0;
+
+  dt {
+    color: var(--_muted);
+  }
+  dd {
+    margin: 0;
+    overflow-wrap: anywhere;
+  }
+}
+
+.sf-mono {
+  font-family: var(--sf-mono, ui-monospace, 'Cascadia Mono', Consolas, monospace);
+  font-size: 0.85rem;
+}
+
+.sf-error {
+  color: var(--_danger);
+  font-weight: 600;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .sf-submit,
+  .sf-clear {
+    transition: filter 120ms ease;
+  }
+  .sf-submit:hover:not(:disabled),
+  .sf-clear:hover {
+    filter: brightness(1.08);
+  }
+}

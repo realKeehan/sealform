@@ -13,7 +13,7 @@ export interface SignRequest {
   manifestSha256: string;
   fields: Record<string, string | boolean>;
   consents: Record<string, boolean>;
-  signature: { typedName: string; vector: JsonValue; png: Uint8Array };
+  signature: { mode: 'drawn' | 'typed'; typedName: string; vector: JsonValue; png: Uint8Array };
   client: Record<string, JsonValue>;
   botToken?: string;
 }
@@ -61,7 +61,7 @@ export function parseSignRequest(body: unknown, manifest: DocumentManifest): Sig
     manifestSha256: str('manifestSha256', 64, HEX64),
     fields: {},
     consents: {},
-    signature: { typedName: '', vector: [], png: new Uint8Array() },
+    signature: { mode: 'drawn', typedName: '', vector: [], png: new Uint8Array() },
     client: {},
   };
   if (typeof b.botToken === 'string') request.botToken = b.botToken.slice(0, 2048);
@@ -92,9 +92,17 @@ export function parseSignRequest(body: unknown, manifest: DocumentManifest): Sig
     issues['signature.typedName'] = `must match ${signerField.label}`;
   }
 
-  const vector = normalizeVector(signature.vector);
-  if (!vector) issues['signature.vector'] = 'draw your signature';
-  else request.signature.vector = vector;
+  const mode = signature.mode === undefined ? 'drawn' : signature.mode;
+  if (mode !== 'drawn' && mode !== 'typed') issues['signature.mode'] = 'must be drawn or typed';
+  else request.signature.mode = mode;
+  if (mode === 'typed') {
+    // A typed signature carries no strokes; the PNG is the typed name rendered by the form.
+    if (!Array.isArray(signature.vector) || signature.vector.length !== 0) issues['signature.vector'] = 'a typed signature has no strokes';
+  } else {
+    const vector = normalizeVector(signature.vector);
+    if (!vector) issues['signature.vector'] = 'draw your signature';
+    else request.signature.vector = vector;
+  }
 
   const png = decodePng(signature.png);
   if (!png) issues['signature.png'] = 'missing or invalid signature image';

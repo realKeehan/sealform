@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>sealform demo</title>
+    <link rel="stylesheet" href="/sealform.css" />
+    <style>
+      body {
+        max-width: 46rem;
+        margin: 2rem auto;
+        padding: 0 1rem;
+        font-family: system-ui, sans-serif;
+        background: #fbfaf7;
+      }
+      /* Theming example: override any --sf-* property. */
+      #sign {
+        --sf-accent: #2f6f4f;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="sign"></div>
+    <script type="module">
+      import { mountSealform } from '/sealform.js';
+      mountSealform(document.getElementById('sign'), {
+        endpoint: '/sealform',
+        documentId: 'example-agreement',
+        onSigned: (receipt) => console.log('signed', receipt),
+      });
+    </script>
+  </body>
+</html>

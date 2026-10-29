@@ -20,3 +20,6 @@ outbox/
 
 .DS_Store
 Thumbs.db
+
+# Local demo data
+examples/demo/.data/

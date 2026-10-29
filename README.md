@@ -7,8 +7,8 @@ the record since. Anyone can check it with nothing but the record and your publi
 Built for small operators who need waivers, tester agreements and contracts without a per-envelope
 bill: one Node.js app, no external database, no vendor holding your records.
 
-> **Status: early.** The core (hashing, sealing, verification), the command line and the signing
-> server are done and tested. The embeddable form and the admin dashboard are in progress. See the
+> **Status: early.** The core (hashing, sealing, verification), the command line, the signing
+> server and the embeddable form are done and tested. The admin dashboard is in progress. See the
 > [roadmap](#roadmap).
 
 ## How a signature becomes evidence
@@ -107,6 +107,30 @@ retention, required checks) plus one Markdown file per language. Published versi
 startup, and a signature is only sealed when the text and form the signer saw match those hashes.
 See `test/fixtures/documents` for a complete example.
 
+### Embedding the signing form
+
+```html
+<link rel="stylesheet" href="/vendor/sealform.css" />
+<div id="sign"></div>
+<script type="module">
+  import { mountSealform } from '/vendor/sealform.js';
+  mountSealform(document.getElementById('sign'), {
+    endpoint: '/sealform',
+    documentId: 'tester-agreement',
+    turnstileSiteKey: '0x4AAA...',     // when the server uses TurnstileCheck
+  });
+</script>
+```
+
+Copy `sealform.js` and `sealform.css` from `node_modules/sealform/dist/client/`, or import
+`sealform/client` from a bundler. The form renders the document, a consent disclosure, the fields,
+a drawn signature pad (finger, stylus or mouse) with a "type instead" option for people who cannot
+draw, and a receipt with download links. It inherits the page font; set `--sf-accent`, `--sf-ink`,
+`--sf-paper`, `--sf-line`, `--sf-radius` and friends to match your site. Every label can be
+replaced through the `labels` option for translations.
+
+Try it locally with `npm run build && npm run demo`, then open http://localhost:5180.
+
 Signing stores the record in SQLite and as files, renders a PDF copy, and writes the receipt email
 to an outbox folder until a mail transport is configured.
 
@@ -126,7 +150,7 @@ link, hash and seal, so the chain still verifies while the personal data is gone
 | Signing server: documents, sessions, bot check, rate limits, PDF copy, email receipt | done |
 | Unicode fonts in the PDF copy (names in Japanese, Greek, Cyrillic and so on print as "?" today; the sealed record is exact) | planned |
 | Retention, legal holds and tombstoning from the CLI | planned |
-| Embeddable signing form (`signature_pad`), themeable, reduced-motion aware | planned |
+| Embeddable signing form (`signature_pad`), typed-signature fallback, themeable, reduced-motion aware | done |
 | Admin dashboard: accounts, two-factor sign-in, sign-in history, audit log, documents, submissions | planned |
 | Jurisdiction profiles: the signer's country sets the law cited, age rules, notices, required fields and checks, all sourced and dated | planned |
 | Private signing links for contracts, with countersignature | planned |
