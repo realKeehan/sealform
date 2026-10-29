@@ -1,0 +1,14 @@
+{
+  "id": "esign",
+  "version": "esign-1",
+  "title": "Consent to electronic signature",
+  "category": "disclosure",
+  "status": "published",
+  "public": false,
+  "languages": ["en"],
+  "governingLang": "en",
+  "fields": [],
+  "consents": [],
+  "requiredChecks": [],
+  "retention": { "signed": "P4Y", "unsigned": "P90D" }
+}

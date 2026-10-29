@@ -15,7 +15,7 @@ test('a sealed record verifies', async () => {
 test('the record survives a JSON round trip with reordered keys', async () => {
   const { key, keyset } = await makeKey();
   const record = await sealRecord(body(0, '0'.repeat(64)), key);
-  const reordered = Object.fromEntries(Object.entries(JSON.parse(JSON.stringify(record))).reverse()) as ChainEntry;
+  const reordered = Object.fromEntries(Object.entries(JSON.parse(JSON.stringify(record))).reverse()) as unknown as ChainEntry;
   assert.equal((await verifyEntry(reordered, keyset)).ok, true);
 });
 

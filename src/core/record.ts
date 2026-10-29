@@ -16,6 +16,11 @@ export interface DocumentRef {
   lang: string;
   /** SHA-256 of the exact UTF-8 text shown to the signer. */
   sha256: string;
+  /**
+   * SHA-256 of the canonical document manifest: title, field labels and consent wording. Ties the
+   * checkbox text the signer agreed to into the record, not only the body text.
+   */
+  manifestSha256?: string;
 }
 
 export interface EnvelopeRef {

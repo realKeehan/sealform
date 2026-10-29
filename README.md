@@ -7,8 +7,8 @@ the record since. Anyone can check it with nothing but the record and your publi
 Built for small operators who need waivers, tester agreements and contracts without a per-envelope
 bill: one Node.js app, no external database, no vendor holding your records.
 
-> **Status: early.** The core (hashing, sealing, verification) and the command line are done and
-> tested. The signing server, the embeddable form and the admin dashboard are in progress. See the
+> **Status: early.** The core (hashing, sealing, verification), the command line and the signing
+> server are done and tested. The embeddable form and the admin dashboard are in progress. See the
 > [roadmap](#roadmap).
 
 ## How a signature becomes evidence
@@ -81,6 +81,35 @@ const result = await verifyEntry(record, keyset);
 `sealform/core` runs in browsers and Node alike (Web Crypto only), so you can build a "check my
 signed copy" page with the same code the server uses.
 
+### Running the signing server
+
+```js
+// app.js, the startup file for cPanel "Setup Node.js App", or any Node host
+import { createServer } from 'node:http';
+import { createSealform, TurnstileCheck } from 'sealform/server';
+
+const sealform = await createSealform({
+  dataDir: '/home/you/sealform-data',              // outside public_html
+  documentsDir: '/home/you/sealform-documents',
+  sealingKey: '/home/you/keys/myproject-2026-11.private.jwk.json',
+  keySet: '/home/you/keys/sealform-keys.json',
+  publicOrigin: 'https://example.com',
+  operator: { name: 'Example Studio', email: 'legal@example.com' },
+  botCheck: new TurnstileCheck(process.env.TURNSTILE_SECRET),
+  clientIp: 'x-forwarded-for',                     // only behind a proxy you control
+});
+
+createServer(sealform.handler).listen(process.env.PORT ?? 3000);
+```
+
+Each document version is a folder: `<id>/<version>/document.json` (title, fields, consent wording,
+retention, required checks) plus one Markdown file per language. Published versions are hashed at
+startup, and a signature is only sealed when the text and form the signer saw match those hashes.
+See `test/fixtures/documents` for a complete example.
+
+Signing stores the record in SQLite and as files, renders a PDF copy, and writes the receipt email
+to an outbox folder until a mail transport is configured.
+
 ## Retention
 
 Signed records are evidence, so sealform never deletes them on request. They are not kept forever
@@ -94,7 +123,9 @@ link, hash and seal, so the chain still verifies while the personal data is gone
 | --- | --- |
 | `sealform/core`: canonical JSON, hashing, Ed25519 seals, chain and tombstone verification | done |
 | CLI: `keygen`, `verify`, `verify-chain` | done |
-| Signing server: documents, sessions, bot check, rate limits, PDF copy, email receipt | next |
+| Signing server: documents, sessions, bot check, rate limits, PDF copy, email receipt | done |
+| Unicode fonts in the PDF copy (names in Japanese, Greek, Cyrillic and so on print as "?" today; the sealed record is exact) | planned |
+| Retention, legal holds and tombstoning from the CLI | planned |
 | Embeddable signing form (`signature_pad`), themeable, reduced-motion aware | planned |
 | Admin dashboard: accounts, two-factor sign-in, sign-in history, audit log, documents, submissions | planned |
 | Jurisdiction profiles: the signer's country sets the law cited, age rules, notices, required fields and checks, all sourced and dated | planned |

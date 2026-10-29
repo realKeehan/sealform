@@ -4,6 +4,13 @@
   "description": "Self-hosted electronic signatures with a tamper-evident, independently verifiable audit trail.",
   "license": "MIT",
   "author": "Keehan",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/realKeehan/sealform.git"
+  },
+  "homepage": "https://github.com/realKeehan/sealform#readme",
+  "bugs": "https://github.com/realKeehan/sealform/issues",
+  "keywords": ["e-signature", "esign", "audit-trail", "tamper-evident", "ed25519", "sha-256", "ueta", "esign-act", "eidas"],
   "type": "module",
   "engines": {
     "node": ">=22.13"
@@ -18,6 +25,10 @@
     "./core": {
       "types": "./dist/core/index.d.ts",
       "default": "./dist/core/index.js"
+    },
+    "./server": {
+      "types": "./dist/server/index.d.ts",
+      "default": "./dist/server/index.js"
     }
   },
   "bin": {
@@ -25,7 +36,8 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "prepack": "npm run build",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json",
     "secrets": "node scripts/check-secrets.mjs",
     "test": "node --experimental-strip-types --disable-warning=ExperimentalWarning --test \"test/**/*.test.ts\"",
     "check": "npm run secrets && npm run typecheck && npm test"
@@ -33,5 +45,8 @@
   "devDependencies": {
     "@types/node": "^26.6.6",
     "typescript": "^7.0.2"
+  },
+  "dependencies": {
+    "pdf-lib": "1.17.1"
   }
 }
