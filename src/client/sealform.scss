@@ -194,22 +194,6 @@
   }
 }
 
-.sf-modes {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 1rem;
-}
-
-.sf-mode {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4rem;
-
-  input {
-    accent-color: var(--_accent);
-  }
-}
-
 .sf-pad {
   position: relative;
 }
@@ -236,19 +220,6 @@
   border: 1px solid var(--_line);
   border-radius: 999px;
   cursor: pointer;
-}
-
-.sf-typed-preview {
-  min-height: 4rem;
-  margin: 0;
-  padding: 0.75rem 1rem;
-  font-family: 'Segoe Script', 'Brush Script MT', 'Snell Roundhand', cursive;
-  font-size: 2rem;
-  font-style: italic;
-  background: var(--_surface);
-  border: 2px dashed var(--_line);
-  border-radius: var(--_radius);
-  overflow-wrap: anywhere;
 }
 
 .sf-summary {

@@ -48,10 +48,7 @@ export interface Labels {
   signature: string;
   typedName: string;
   typedNameHelp: string;
-  drawMode: string;
-  typeMode: string;
   drawHelp: string;
-  typeHelp: string;
   clear: string;
   chooseCountry: string;
   chooseOption: string;
@@ -81,10 +78,7 @@ export const defaultLabels: Labels = {
   signature: 'Signature',
   typedName: 'Type your full legal name',
   typedNameHelp: 'It must match the legal name above.',
-  drawMode: 'Draw',
-  typeMode: 'Type instead',
   drawHelp: 'Draw your signature with a finger, stylus or mouse.',
-  typeHelp: 'Your typed name will be used as your signature.',
   clear: 'Clear',
   chooseCountry: 'Choose a country',
   chooseOption: 'Choose one',
@@ -100,7 +94,7 @@ export const defaultLabels: Labels = {
   recordHash: 'SHA-256',
   downloadPdf: 'Download PDF copy',
   downloadRecord: 'Download sealed record',
-  emptySignature: 'draw your signature, or choose "Type instead"',
+  emptySignature: 'draw your signature in the box',
   botCheckPending: 'Please complete the check above.',
 };
 
@@ -210,22 +204,11 @@ export async function mountSealform(root: HTMLElement, options: MountOptions): P
   );
   inputs.set('signature.typedName', typed);
 
-  const modeName = `${prefix}-mode`;
-  const drawRadio = el('input', { type: 'radio', name: modeName, value: 'drawn', id: `${modeName}-draw`, checked: '' }) as HTMLInputElement;
-  const typeRadio = el('input', { type: 'radio', name: modeName, value: 'typed', id: `${modeName}-type` }) as HTMLInputElement;
-  sigSet.append(
-    el('div', { class: 'sf-modes', role: 'radiogroup', 'aria-label': labels.signature },
-      el('label', { class: 'sf-mode' }, drawRadio, labels.drawMode),
-      el('label', { class: 'sf-mode' }, typeRadio, labels.typeMode),
-    ),
-  );
-
   const canvas = el('canvas', { class: 'sf-canvas', 'aria-label': labels.drawHelp, role: 'img' }) as HTMLCanvasElement;
   const clear = el('button', { type: 'button', class: 'sf-clear' }, labels.clear) as HTMLButtonElement;
   const padWrap = el('div', { class: 'sf-pad' }, canvas, clear);
   const padHelp = el('p', { class: 'sf-help', id: `${prefix}-pad-help` }, labels.drawHelp);
-  const typedPreview = el('p', { class: 'sf-typed-preview', hidden: '', 'aria-hidden': 'true' });
-  sigSet.append(padWrap, padHelp, typedPreview, slot('signature.vector', `${prefix}-pad-error`));
+  sigSet.append(padWrap, padHelp, slot('signature.vector', `${prefix}-pad-error`));
   form.append(sigSet);
 
   const pad = new SignaturePad(canvas, { penColor: getComputedStyle(root).getPropertyValue('--sf-ink').trim() || '#14141c' });
@@ -243,18 +226,6 @@ export async function mountSealform(root: HTMLElement, options: MountOptions): P
   cleanup.push(() => observer.disconnect(), () => pad.off());
   clear.addEventListener('click', () => pad.clear());
 
-  const setMode = () => {
-    const typedMode = typeRadio.checked;
-    padWrap.hidden = typedMode;
-    padHelp.textContent = typedMode ? labels.typeHelp : labels.drawHelp;
-    typedPreview.hidden = !typedMode;
-    typedPreview.textContent = typed.value;
-  };
-  drawRadio.addEventListener('change', setMode);
-  typeRadio.addEventListener('change', setMode);
-  typed.addEventListener('input', () => {
-    typedPreview.textContent = typed.value;
-  });
 
   // Bot check, errors and submit ------------------------------------------------------------------
   let botToken: string | undefined;
@@ -309,9 +280,8 @@ export async function mountSealform(root: HTMLElement, options: MountOptions): P
 
   async function send(): Promise<void> {
     clearErrors();
-    const mode = typeRadio.checked ? 'typed' : 'drawn';
     const local: Record<string, string> = {};
-    if (mode === 'drawn' && pad.isEmpty()) local['signature.vector'] = labels.emptySignature;
+    if (pad.isEmpty()) local['signature.vector'] = labels.emptySignature;
     if (turnstile && !botToken) local.botToken = labels.botCheckPending;
     if (Object.keys(local).length) {
       showErrors(local);
@@ -339,10 +309,9 @@ export async function mountSealform(root: HTMLElement, options: MountOptions): P
         fields,
         consents,
         signature: {
-          mode,
           typedName: typed.value,
-          vector: mode === 'drawn' ? pad.toData().map((group) => ({ points: group.points })) : [],
-          png: mode === 'drawn' ? pad.toDataURL('image/png') : typedSignaturePng(typed.value, root),
+          vector: pad.toData().map((group) => ({ points: group.points })),
+          png: pad.toDataURL('image/png'),
         },
         client: {
           reportedAt: new Date().toISOString(),
@@ -495,23 +464,6 @@ export async function mountSealform(root: HTMLElement, options: MountOptions): P
   }
 
   return { destroy };
-}
-
-/** Renders a typed name as the signature image for signers who cannot draw. */
-function typedSignaturePng(name: string, root: HTMLElement): string {
-  const canvas = document.createElement('canvas');
-  canvas.width = 900;
-  canvas.height = 240;
-  const ctx = canvas.getContext('2d')!;
-  ctx.fillStyle = getComputedStyle(root).getPropertyValue('--sf-ink').trim() || '#14141c';
-  ctx.textBaseline = 'middle';
-  let size = 96;
-  do {
-    ctx.font = `italic ${size}px "Segoe Script", "Brush Script MT", "Snell Roundhand", cursive`;
-    size -= 4;
-  } while (ctx.measureText(name).width > 840 && size > 24);
-  ctx.fillText(name, 30, 120);
-  return canvas.toDataURL('image/png');
 }
 
 const NOT_COUNTRIES = new Set(['EU', 'EZ', 'UN', 'QO', 'XA', 'XB', 'ZZ', 'AA']);

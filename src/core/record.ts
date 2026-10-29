@@ -30,8 +30,6 @@ export interface EnvelopeRef {
 }
 
 export interface SignatureEvidence {
-  /** "drawn" with a pointer, or "typed" for signers who cannot draw; the PNG then renders the typed name. */
-  mode?: 'drawn' | 'typed';
   typedName: string;
   /** signature_pad point groups, kept as vector data. */
   vector: JsonValue;

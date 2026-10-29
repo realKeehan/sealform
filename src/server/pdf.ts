@@ -54,7 +54,7 @@ export async function renderCertificate(input: PdfInput): Promise<Uint8Array> {
   const image = await pdf.embedPng(input.png);
   const scale = Math.min(220 / image.width, 90 / image.height, 1);
   writer.image(image, image.width * scale, image.height * scale);
-  writer.text(`Typed name: ${record.signature.typedName}${record.signature.mode === 'typed' ? ' (signed by typing, no drawing)' : ''}`, regular, 10);
+  writer.text(`Typed name: ${record.signature.typedName}`, regular, 10);
 
   writer.section('Answers', bold);
   writer.pairs(

@@ -166,7 +166,7 @@ export async function createSealform(config: SealformConfig): Promise<Sealform> 
                 : { id: 'none', version: 'none', lang: request.lang, sha256: '0'.repeat(64) },
               fields: request.fields,
               consent: request.consents,
-              signature: { mode: request.signature.mode, typedName: request.signature.typedName, vector: request.signature.vector, pngSha256 },
+              signature: { typedName: request.signature.typedName, vector: request.signature.vector, pngSha256 },
               assurance: { level: 'ses', checks: assurance },
               server: {
                 receivedAt: receivedAt.toISOString(),

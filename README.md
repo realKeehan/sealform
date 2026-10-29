@@ -124,8 +124,9 @@ See `test/fixtures/documents` for a complete example.
 
 Copy `sealform.js` and `sealform.css` from `node_modules/sealform/dist/client/`, or import
 `sealform/client` from a bundler. The form renders the document, a consent disclosure, the fields,
-a drawn signature pad (finger, stylus or mouse) with a "type instead" option for people who cannot
-draw, and a receipt with download links. It inherits the page font; set `--sf-accent`, `--sf-ink`,
+a drawn signature pad (finger, stylus or mouse) next to the typed legal name, and a receipt with
+download links. A drawing is required; offer people who cannot draw an alternative through your
+support contact. It inherits the page font; set `--sf-accent`, `--sf-ink`,
 `--sf-paper`, `--sf-line`, `--sf-radius` and friends to match your site. Every label can be
 replaced through the `labels` option for translations.
 
@@ -150,7 +151,7 @@ link, hash and seal, so the chain still verifies while the personal data is gone
 | Signing server: documents, sessions, bot check, rate limits, PDF copy, email receipt | done |
 | Unicode fonts in the PDF copy (names in Japanese, Greek, Cyrillic and so on print as "?" today; the sealed record is exact) | planned |
 | Retention, legal holds and tombstoning from the CLI | planned |
-| Embeddable signing form (`signature_pad`), typed-signature fallback, themeable, reduced-motion aware | done |
+| Embeddable signing form (`signature_pad`), themeable, reduced-motion aware | done |
 | Admin dashboard: accounts, two-factor sign-in, sign-in history, audit log, documents, submissions | planned |
 | Jurisdiction profiles: the signer's country sets the law cited, age rules, notices, required fields and checks, all sourced and dated | planned |
 | Private signing links for contracts, with countersignature | planned |
