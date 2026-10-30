@@ -96,7 +96,7 @@ const sealform = await createSealform({
   keySet: '/home/you/keys/sealform-keys.json',
   publicOrigin: 'https://example.com',
   operator: { name: 'Example Studio', email: 'legal@example.com' },
-  botCheck: new TurnstileCheck(process.env.TURNSTILE_SECRET),
+  botCheck: new TurnstileCheck(process.env.TURNSTILE_SECRET, fetch, ['example.com'], 'sign'),
   clientIp: 'x-forwarded-for',                     // only behind a proxy you control
 });
 
@@ -119,6 +119,7 @@ See `test/fixtures/documents` for a complete example.
     endpoint: '/sealform',
     documentId: 'tester-agreement',
     turnstileSiteKey: '0x4AAA...',     // when the server uses TurnstileCheck
+    turnstileAction: 'sign',           // matches the server's expected action
   });
 </script>
 ```
