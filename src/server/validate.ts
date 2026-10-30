@@ -1,7 +1,7 @@
 // Validation of the public signing request. Nothing from the request reaches a record without
 // passing through here, and everything has a size cap.
 
-import type { JsonValue } from '../core/index.ts';
+import { isCountryCode, type JsonValue } from '../core/index.ts';
 import type { DocumentManifest, FieldSpec } from './documents.ts';
 
 export interface SignRequest {
@@ -30,16 +30,12 @@ export class ValidationError extends Error {
 const MAX_PNG_BYTES = 300_000;
 const MAX_POINTS = 6000;
 const MAX_GROUPS = 200;
+// A tap or a tick is not a signature. Require some real movement, measured in CSS pixels.
+const MIN_POINTS = 8;
+const MIN_EXTENT = 12;
 const PNG_MAGIC = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
 const HEX64 = /^[0-9a-f]{64}$/;
 const EMAIL = /^[^\s@<>()[\]\\,;:"]+@[^\s@<>()[\]\\,;:"]+\.[^\s@<>()[\]\\,;:"]{2,}$/;
-const NOT_COUNTRIES = new Set(['EU', 'EZ', 'UN', 'QO', 'XA', 'XB', 'ZZ', 'AA']);
-const regionNames = new Intl.DisplayNames(['en'], { type: 'region', fallback: 'none' });
-
-export function isCountryCode(value: string): boolean {
-  return /^[A-Z]{2}$/.test(value) && !NOT_COUNTRIES.has(value) && regionNames.of(value) !== undefined;
-}
-
 export function parseSignRequest(body: unknown, manifest: DocumentManifest): SignRequest {
   const issues: Record<string, string> = {};
   const b = (body ?? {}) as Record<string, unknown>;
@@ -95,7 +91,7 @@ export function parseSignRequest(body: unknown, manifest: DocumentManifest): Sig
   // A drawn signature is required. Signers who cannot draw arrange an alternative with the operator.
   if (signature.mode !== undefined) issues['signature.mode'] = 'only drawn signatures are accepted';
   const vector = normalizeVector(signature.vector);
-  if (!vector) issues['signature.vector'] = 'draw your signature';
+  if (!vector) issues['signature.vector'] = 'draw your signature (a dot or a short tick is not enough)';
   else request.signature.vector = vector;
 
   const png = decodePng(signature.png);
@@ -136,6 +132,10 @@ function normalizeName(name: string): string {
 function normalizeVector(raw: unknown): JsonValue | null {
   if (!Array.isArray(raw) || raw.length === 0 || raw.length > MAX_GROUPS) return null;
   let total = 0;
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
   const groups: JsonValue[] = [];
   for (const group of raw) {
     const points = isObject(group) && Array.isArray(group.points) ? group.points : null;
@@ -147,10 +147,15 @@ function normalizeVector(raw: unknown): JsonValue | null {
       if (!isObject(point)) return null;
       const { x, y, time, pressure } = point;
       if (![x, y, time].every((n) => typeof n === 'number' && Number.isFinite(n))) return null;
+      minX = Math.min(minX, x as number);
+      maxX = Math.max(maxX, x as number);
+      minY = Math.min(minY, y as number);
+      maxY = Math.max(maxY, y as number);
       clean.push({ x: round(x as number), y: round(y as number), time: time as number, ...(typeof pressure === 'number' && Number.isFinite(pressure) ? { pressure: round(pressure) } : {}) });
     }
     groups.push({ points: clean });
   }
+  if (total < MIN_POINTS || Math.max(maxX - minX, maxY - minY) < MIN_EXTENT) return null;
   return groups;
 }
 

@@ -97,6 +97,11 @@ export class SqliteStore {
     this.db.close();
   }
 
+  /** The underlying connection, shared with the admin tables. */
+  get database(): DatabaseSync {
+    return this.db;
+  }
+
   // Sessions -------------------------------------------------------------------------------------
 
   createSession(row: Omit<SessionRow, 'usedAt'>): void {

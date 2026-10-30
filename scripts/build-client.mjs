@@ -3,7 +3,7 @@
 //   dist/client/sealform.css  compiled from src/client/sealform.scss
 // tsc separately emits dist/client/index.js for bundler users.
 
-import { mkdir, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, writeFile } from 'node:fs/promises';
 import { build } from 'esbuild';
 import { compile } from 'sass';
 
@@ -24,4 +24,8 @@ await build({
 const css = compile('src/client/sealform.scss', { style: 'compressed' });
 await writeFile('dist/client/sealform.css', css.css + '\n');
 
-console.log('Built dist/client/sealform.js and dist/client/sealform.css');
+// The admin stylesheet is plain CSS that the server reads next to its own module.
+await mkdir('dist/server/admin', { recursive: true });
+await copyFile('src/server/admin/admin.css', 'dist/server/admin/admin.css');
+
+console.log('Built dist/client/sealform.js, dist/client/sealform.css and dist/server/admin/admin.css');

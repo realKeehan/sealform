@@ -8,8 +8,8 @@ Built for small operators who need waivers, tester agreements and contracts with
 bill: one Node.js app, no external database, no vendor holding your records.
 
 > **Status: early.** The core (hashing, sealing, verification), the command line, the signing
-> server and the embeddable form are done and tested. The admin dashboard is in progress. See the
-> [roadmap](#roadmap).
+> server, the embeddable form and the admin dashboard are done and tested. Private contract links,
+> jurisdiction profiles and site controls are next. See the [roadmap](#roadmap).
 
 ## How a signature becomes evidence
 
@@ -132,6 +132,39 @@ replaced through the `labels` option for translations.
 
 Try it locally with `npm run build && npm run demo`, then open http://localhost:5180.
 
+### The admin dashboard
+
+Set `adminPath` to turn it on, and pick a path that nothing links to:
+
+```js
+const sealform = await createSealform({ /* ... */ adminPath: '/_sf' });
+```
+
+Create the first owner from the command line. The temporary password is printed once:
+
+```bash
+npx sealform admin create --data /home/you/sealform-data   --key /home/you/keys/myproject-2026-11.private.jwk.json   --email you@example.com --name "Your Name" --role owner
+```
+
+| Page | Who | What |
+| --- | --- | --- |
+| Overview | everyone | Counts by status, what is open for signing, the chain head, checks not configured |
+| Submissions | everyone | Search and filter, per-record view with the signature, answers and all captured evidence, per-record verification, PDF and record downloads, application status |
+| Documents | owner, admin | Versions, languages, hashes, publish and close (publishing closes the previous version) |
+| Accounts | owner | Create accounts with a temporary password, change roles, disable, reset |
+| Sign-ins | everyone (owners see all) | Every attempt with IP and browser, successful or not |
+| Audit log | owner | Every dashboard change, hash-chained and sealed like records, exportable and checkable with `sealform verify-chain` |
+| My account | everyone | Password, two-factor setup, active sessions you can sign out |
+
+Roles: **reviewers** read submissions and set their status. **Admins** also manage documents and
+export CSV. **Owners** also manage accounts, place legal holds and read the audit log.
+
+How it is protected: scrypt password hashes; TOTP two-factor that owners cannot turn off, with codes
+that cannot be replayed; an account locks for 15 minutes after five failures; sessions live in
+HttpOnly, SameSite=Strict cookies, idle out after 2 hours and end after 12; every change needs a CSRF
+token and a same-origin request; pages are server-rendered with escaping everywhere and a CSP that
+forbids scripts. The last active owner cannot be demoted or disabled.
+
 Signing stores the record in SQLite and as files, renders a PDF copy, and writes the receipt email
 to an outbox folder until a mail transport is configured.
 
@@ -152,7 +185,7 @@ link, hash and seal, so the chain still verifies while the personal data is gone
 | Unicode fonts in the PDF copy (names in Japanese, Greek, Cyrillic and so on print as "?" today; the sealed record is exact) | planned |
 | Retention, legal holds and tombstoning from the CLI | planned |
 | Embeddable signing form (`signature_pad`), themeable, reduced-motion aware | done |
-| Admin dashboard: accounts, two-factor sign-in, sign-in history, audit log, documents, submissions | planned |
+| Admin dashboard: accounts, two-factor sign-in, sign-in history, sealed audit log, documents, submissions | done |
 | Jurisdiction profiles: the signer's country sets the law cited, age rules, notices, required fields and checks, all sourced and dated | planned |
 | Private signing links for contracts, with countersignature | planned |
 | Site controls: hide pages, parking mode | planned |

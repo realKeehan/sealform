@@ -1,0 +1,349 @@
+/* sealform admin. Plain CSS so it loads from source and from dist; the build copies it. */
+
+:root {
+  --ink: #17171d;
+  --muted: #5d5d68;
+  --paper: #f5f4f0;
+  --card: #ffffff;
+  --line: #d4d1c9;
+  --accent: #2f6f4f;
+  --accent-ink: #ffffff;
+  --danger: #b3261e;
+  --warn-bg: #fdf0e1;
+  --radius: 10px;
+  color-scheme: light;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  color: var(--ink);
+  font: 16px/1.5 system-ui, -apple-system, 'Segoe UI', sans-serif;
+  background: var(--paper);
+}
+
+.skip {
+  position: absolute;
+  left: -999px;
+}
+.skip:focus {
+  left: 8px;
+  top: 8px;
+  padding: 8px 12px;
+  background: var(--card);
+  z-index: 10;
+}
+
+.top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 24px;
+  padding: 12px 24px;
+  background: var(--card);
+  border-bottom: 1px solid var(--line);
+}
+.brand {
+  margin: 0;
+  font-weight: 700;
+}
+.brand span {
+  color: var(--muted);
+  font-weight: 400;
+}
+.top nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  flex: 1;
+}
+.top nav a {
+  padding: 4px 2px;
+  color: var(--ink);
+  text-decoration: none;
+  border-bottom: 2px solid transparent;
+}
+.top nav a:hover,
+.top nav a[aria-current='page'] {
+  border-bottom-color: var(--accent);
+}
+.logout {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+main {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 24px;
+}
+h1 {
+  margin: 0 0 16px;
+  font-size: 1.7rem;
+}
+h2 {
+  margin: 0 0 12px;
+  font-size: 1.15rem;
+}
+
+a {
+  color: var(--accent);
+}
+code {
+  font: 0.85em ui-monospace, 'Cascadia Mono', Consolas, monospace;
+  overflow-wrap: anywhere;
+}
+.secret {
+  display: inline-block;
+  padding: 6px 10px;
+  font-size: 1rem;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  user-select: all;
+}
+.muted {
+  color: var(--muted);
+}
+.good {
+  color: var(--accent);
+  font-weight: 600;
+}
+.bad {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.card {
+  margin: 0 0 16px;
+  padding: 16px 20px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+.card > :last-child {
+  margin-bottom: 0;
+}
+.card.narrow,
+.narrow {
+  max-width: 28rem;
+}
+.card.notice {
+  border-color: var(--accent);
+  border-width: 2px;
+}
+.grid2 {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
+  gap: 16px;
+}
+
+.tiles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.tile {
+  display: flex;
+  flex-direction: column;
+  min-width: 8rem;
+  padding: 12px 16px;
+  color: var(--ink);
+  text-decoration: none;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+.tile__n {
+  font-size: 1.8rem;
+  font-weight: 700;
+}
+
+.table-wrap {
+  margin-bottom: 16px;
+  overflow-x: auto;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.92rem;
+}
+th,
+td {
+  padding: 8px 12px;
+  text-align: left;
+  vertical-align: top;
+  border-bottom: 1px solid var(--line);
+}
+th {
+  color: var(--muted);
+  font-weight: 600;
+  white-space: nowrap;
+}
+tr:last-child td {
+  border-bottom: 0;
+}
+.row-warn td {
+  background: var(--warn-bg);
+}
+
+.facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 6px 16px;
+  margin: 0 0 12px;
+}
+.facts dt {
+  color: var(--muted);
+}
+.facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.signature {
+  display: block;
+  max-width: 100%;
+  background: #fff;
+  border: 1px dashed var(--line);
+  border-radius: 6px;
+}
+.doc-text {
+  max-height: 24rem;
+  margin: 0;
+  padding: 12px;
+  overflow: auto;
+  white-space: pre-wrap;
+  background: var(--paper);
+  border-radius: 6px;
+}
+
+.pill {
+  display: inline-block;
+  padding: 1px 8px;
+  font-size: 0.8rem;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+}
+.pill--published {
+  color: var(--accent-ink);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+label {
+  display: grid;
+  gap: 4px;
+  font-weight: 600;
+}
+input:not([type='hidden']),
+select,
+textarea {
+  width: 100%;
+  min-height: 40px;
+  padding: 6px 10px;
+  color: var(--ink);
+  font: inherit;
+  font-weight: 400;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.filters label {
+  min-width: 9rem;
+}
+.stack {
+  display: grid;
+  gap: 12px;
+}
+.inline {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 0 8px 8px 0;
+}
+.inline select {
+  width: auto;
+}
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+button,
+.button-link {
+  display: inline-block;
+  min-height: 40px;
+  padding: 8px 16px;
+  color: var(--accent-ink);
+  font: inherit;
+  font-weight: 600;
+  text-decoration: none;
+  background: var(--accent);
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.logout button {
+  min-height: 32px;
+  padding: 4px 12px;
+  color: var(--ink);
+  background: transparent;
+  border: 1px solid var(--line);
+}
+
+:focus-visible {
+  outline: 3px solid #1c5fd1;
+  outline-offset: 2px;
+}
+
+.flash {
+  padding: 10px 14px;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+}
+.flash--error {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+.pager {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+ul,
+ol {
+  padding-left: 1.3em;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  button,
+  .button-link,
+  .top nav a {
+    transition: filter 120ms ease, border-color 120ms ease;
+  }
+  button:hover,
+  .button-link:hover {
+    filter: brightness(1.1);
+  }
+}

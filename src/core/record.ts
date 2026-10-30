@@ -8,6 +8,7 @@ import { SEAL_ALG, type SealingKey } from './keys.ts';
 
 export const RECORD_FORMAT = 'sealform/record@1';
 export const TOMBSTONE_FORMAT = 'sealform/tombstone@1';
+export const AUDIT_FORMAT = 'sealform/audit@1';
 export const SEAL_DOMAIN = 'sealform-seal-v1:';
 
 export interface DocumentRef {
@@ -105,9 +106,28 @@ export interface Tombstone {
   tombstonedAt: string;
 }
 
-export type ChainEntry = SealformRecord | Tombstone;
+/** One administrative action, chained and sealed like records so the log itself is tamper-evident. */
+export interface AuditBody {
+  format: typeof AUDIT_FORMAT;
+  id: string;
+  at: string;
+  /** Account id and email of whoever acted, or "system". */
+  actor: { id: string; email: string } | 'system';
+  action: string;
+  target: string;
+  details: { [key: string]: JsonValue };
+  ip: string;
+  chain: ChainLink;
+}
 
-export function computeRecordHash(record: RecordBody | SealformRecord): Promise<string> {
+export interface AuditEntry extends AuditBody {
+  hash: string;
+  seal: Seal;
+}
+
+export type ChainEntry = SealformRecord | Tombstone | AuditEntry;
+
+export function computeRecordHash(record: RecordBody | SealformRecord | AuditBody | AuditEntry): Promise<string> {
   const { hash: _hash, seal: _seal, ...body } = record as SealformRecord;
   return sha256Canonical(body);
 }
@@ -116,10 +136,12 @@ export function sealMessage(hash: string): Uint8Array<ArrayBuffer> {
   return utf8(SEAL_DOMAIN + hash);
 }
 
-export async function sealRecord(body: RecordBody, key: SealingKey): Promise<SealformRecord> {
+export async function sealRecord(body: RecordBody, key: SealingKey): Promise<SealformRecord>;
+export async function sealRecord(body: AuditBody, key: SealingKey): Promise<AuditEntry>;
+export async function sealRecord(body: RecordBody | AuditBody, key: SealingKey): Promise<SealformRecord | AuditEntry> {
   const hash = await computeRecordHash(body);
   const sig = new Uint8Array(await crypto.subtle.sign({ name: SEAL_ALG }, key.privateKey, sealMessage(hash)));
-  return { ...body, hash, seal: { alg: SEAL_ALG, kid: key.kid, sig: toBase64Url(sig) } };
+  return { ...body, hash, seal: { alg: SEAL_ALG, kid: key.kid, sig: toBase64Url(sig) } } as SealformRecord | AuditEntry;
 }
 
 export function toTombstone(record: SealformRecord, now: Date = new Date()): Tombstone {

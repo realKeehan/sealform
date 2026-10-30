@@ -1,4 +1,5 @@
 export { canonicalize, type JsonPrimitive, type JsonValue } from './canonical.ts';
+export { COUNTRY_CODES, isCountryCode } from './countries.ts';
 export { constantTimeEqual, fromBase64Url, fromHex, toBase64Url, toHex, utf8 } from './encoding.ts';
 export { isSha256Hex, sha256Canonical, sha256Hex, ZERO_HASH } from './hash.ts';
 export {
@@ -16,6 +17,7 @@ export {
   type SealingKey,
 } from './keys.ts';
 export {
+  AUDIT_FORMAT,
   computeRecordHash,
   isTombstone,
   RECORD_FORMAT,
@@ -25,6 +27,8 @@ export {
   TOMBSTONE_FORMAT,
   toTombstone,
   type Assurance,
+  type AuditBody,
+  type AuditEntry,
   type AssuranceCheck,
   type ChainEntry,
   type ChainLink,

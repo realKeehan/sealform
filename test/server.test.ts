@@ -82,6 +82,11 @@ async function open(url: string, lang = 'en') {
   };
 }
 
+/** A believable pen stroke: 20 points, 95 px wide. */
+function stroke() {
+  return Array.from({ length: 20 }, (_, i) => ({ x: i * 5, y: 20 + Math.sin(i / 3) * 10, time: i * 20 }));
+}
+
 function submission(doc: Awaited<ReturnType<typeof open>>, overrides: Record<string, unknown> = {}) {
   return {
     sessionId: doc.session.id,
@@ -92,7 +97,7 @@ function submission(doc: Awaited<ReturnType<typeof open>>, overrides: Record<str
     manifestSha256: doc.document.manifestSha256,
     fields: { legalName: 'Ada Example', email: 'ada@example.com', country: 'DE', adult: true },
     consents: { esign: true, acceptVersion: true },
-    signature: { typedName: 'ada example', vector: [{ points: [{ x: 1, y: 2, time: 3, pressure: 0.5 }, { x: 4, y: 5, time: 6 }] }], png: png() },
+    signature: { typedName: 'ada example', vector: [{ points: stroke() }], png: png() },
     client: { timeZone: 'Europe/Berlin', screen: '390x844', injected: 'dropped' },
     ...overrides,
   };
@@ -251,12 +256,26 @@ test('names outside the PDF fonts still sign; the PDF marks them', async () => {
     const doc = await open(app.url);
     const response = await post(app.url, submission(doc, {
       fields: { legalName: '山田 太郎', email: 'taro@example.jp', country: 'JP', adult: true },
-      signature: { typedName: '山田 太郎', vector: [{ points: [{ x: 1, y: 1, time: 1 }] }], png: png() },
+      signature: { typedName: '山田 太郎', vector: [{ points: stroke() }], png: png() },
     }));
     assert.equal(response.status, 201, await response.clone().text());
     const { id } = (await response.json()) as { id: string };
     const record = app.sealform.store.getEntry(id) as SealformRecord;
     assert.equal(record.fields.legalName, '山田 太郎');
+  } finally {
+    await app.stop();
+  }
+});
+
+test('a dot or a tick is not accepted as a signature', async () => {
+  const app = await start('dot');
+  try {
+    const doc = await open(app.url);
+    const dot = await post(app.url, submission(doc, { signature: { typedName: 'ada example', vector: [{ points: [{ x: 1, y: 2, time: 3 }] }], png: png() } }));
+    assert.equal(dot.status, 422);
+    const tick = await post(app.url, submission(doc, { signature: { typedName: 'ada example', vector: [{ points: Array.from({ length: 12 }, (_, i) => ({ x: 50 + i * 0.1, y: 50, time: i })) }], png: png() } }));
+    assert.equal(tick.status, 422, 'many points but no real extent');
+    assert.equal((await post(app.url, submission(doc))).status, 201, 'a real stroke still signs');
   } finally {
     await app.stop();
   }

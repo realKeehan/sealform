@@ -5,7 +5,7 @@
 // the host site can theme it.
 
 import SignaturePad from 'signature_pad';
-import { sha256Hex } from '../core/index.ts';
+import { COUNTRY_CODES, sha256Hex } from '../core/index.ts';
 import { renderMarkdown } from './markdown.ts';
 
 export interface FieldSpec {
@@ -466,23 +466,14 @@ export async function mountSealform(root: HTMLElement, options: MountOptions): P
   return { destroy };
 }
 
-const NOT_COUNTRIES = new Set(['EU', 'EZ', 'UN', 'QO', 'XA', 'XB', 'ZZ', 'AA']);
 const countryCache = new Map<string, [string, string][]>();
 
-/** Every ISO 3166-1 alpha-2 region the browser knows, named in the document language. */
+/** The official country codes, named in the document language. */
 function countries(lang: string): [string, string][] {
   const cached = countryCache.get(lang);
   if (cached) return cached;
-  const names = new Intl.DisplayNames([lang, 'en'], { type: 'region', fallback: 'none' });
-  const list: [string, string][] = [];
-  for (let a = 65; a <= 90; a++) {
-    for (let b = 65; b <= 90; b++) {
-      const code = String.fromCharCode(a, b);
-      if (NOT_COUNTRIES.has(code)) continue;
-      const name = names.of(code);
-      if (name) list.push([code, name]);
-    }
-  }
+  const names = new Intl.DisplayNames([lang, 'en'], { type: 'region', fallback: 'code' });
+  const list = COUNTRY_CODES.map((code): [string, string] => [code, names.of(code) ?? code]);
   list.sort((x, y) => x[1].localeCompare(y[1], lang));
   countryCache.set(lang, list);
   return list;

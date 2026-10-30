@@ -30,7 +30,9 @@ import { DocumentRegistry, type LoadedDocument } from './documents.ts';
 import { NoBotCheck, RateLimiter, type BotCheck } from './guards.ts';
 import { clientIp, header, HttpError, readJson, sendBytes, sendJson, type ClientIpSource } from './http.ts';
 import { OutboxMailer, type Mailer } from './mailer.ts';
+import { createAdmin } from './admin/index.ts';
 import { renderCertificate } from './pdf.ts';
+import { AdminStore } from './admin/db.ts';
 import { SqliteStore } from './store.ts';
 import { parseSignRequest, ValidationError } from './validate.ts';
 
@@ -50,6 +52,11 @@ export interface SealformConfig {
   /** Origins allowed to call the API from another site. Same-origin calls are always allowed. */
   allowedOrigins?: string[];
   clientIp?: ClientIpSource;
+  /**
+   * Mounts the admin dashboard at this path, such as "/_sf". Leave it unset to turn the dashboard off.
+   * Pick a path that is not linked anywhere; it is not a secret, only less noise from scanners.
+   */
+  adminPath?: string;
   botCheck?: BotCheck;
   mailer?: Mailer;
   checks?: Map<string, Check>;
@@ -64,6 +71,8 @@ export interface Sealform {
   handler: (req: IncomingMessage, res: ServerResponse, next?: (error?: unknown) => void) => void;
   store: SqliteStore;
   documents: DocumentRegistry;
+  /** Admin tables, present when adminPath is set. Used by the CLI and tests. */
+  admin: AdminStore | undefined;
   close(): void;
 }
 
@@ -94,6 +103,20 @@ export async function createSealform(config: SealformConfig): Promise<Sealform> 
   const documents = await DocumentRegistry.load(config.documentsDir, checks);
   const store = await SqliteStore.open(config.dataDir);
   const keysUrl = `${origin}/.well-known/sealform-keys.json`;
+  const admin = config.adminPath
+    ? await createAdmin({
+        base: config.adminPath.replace(/\/+$/, ''),
+        origin,
+        operatorName: config.operator.name,
+        store,
+        documents,
+        sealingKey,
+        keySet,
+        checks,
+        now,
+        log,
+      })
+    : undefined;
 
   async function getDocument(req: IncomingMessage, res: ServerResponse, id: string, url: URL): Promise<void> {
     const doc = documents.current(id);
@@ -120,7 +143,7 @@ export async function createSealform(config: SealformConfig): Promise<Sealform> 
   async function sign(req: IncomingMessage, res: ServerResponse, ip: string): Promise<void> {
     const body = (await readJson(req, MAX_BODY)) as Record<string, unknown>;
     const doc = documents.get(String(body?.documentId ?? ''), String(body?.version ?? ''));
-    if (!doc || doc.manifest.status !== 'published' || !doc.manifest.public) {
+    if (!doc || documents.status(doc) !== 'published' || !doc.manifest.public) {
       throw new HttpError(409, 'This document version is no longer open for signing. Reload the page to get the current version.');
     }
     const request = parseSignRequest(body, doc.manifest);
@@ -284,7 +307,8 @@ export async function createSealform(config: SealformConfig): Promise<Sealform> 
   }
 
   const handler: Sealform['handler'] = (req, res, next) => {
-    route(req, res).then(
+    const handled = admin ? admin.route(req, res, clientIp(req, ipSource)) : Promise.resolve(false);
+    handled.then((done) => (done ? true : route(req, res))).then(
       (handled) => {
         if (handled) return;
         if (next) next();
@@ -307,7 +331,7 @@ export async function createSealform(config: SealformConfig): Promise<Sealform> 
     );
   };
 
-  return { handler, store, documents, close: () => store.close() };
+  return { handler, store, documents, admin: admin?.db, close: () => store.close() };
 }
 
 function limit(limiter: RateLimiter, key: string): void {
@@ -373,8 +397,11 @@ function receiptMail(
 }
 
 export { defaultChecks, CheckNotConfiguredError, type Check } from './checks.ts';
+export { hashPassword, passwordProblem, ROLES, type Role } from './admin/index.ts';
+export { AdminStore } from './admin/db.ts';
 export { DocumentRegistry, type DocumentManifest, type FieldSpec, type ConsentSpec } from './documents.ts';
 export { NoBotCheck, RateLimiter, TurnstileCheck, type BotCheck } from './guards.ts';
 export { OutboxMailer, toMime, type Mailer, type MailMessage } from './mailer.ts';
 export { SqliteStore, type RecordSummary } from './store.ts';
-export { isCountryCode, ValidationError } from './validate.ts';
+export { ValidationError } from './validate.ts';
+export { isCountryCode } from '../core/index.ts';

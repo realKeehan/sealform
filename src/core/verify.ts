@@ -4,7 +4,7 @@
 import { fromBase64Url } from './encoding.ts';
 import { isSha256Hex, ZERO_HASH } from './hash.ts';
 import { findKey, importPublicKey, SEAL_ALG, type KeySet } from './keys.ts';
-import { computeRecordHash, isTombstone, RECORD_FORMAT, sealMessage, TOMBSTONE_FORMAT, type ChainEntry } from './record.ts';
+import { AUDIT_FORMAT, computeRecordHash, isTombstone, RECORD_FORMAT, sealMessage, TOMBSTONE_FORMAT, type ChainEntry } from './record.ts';
 
 export type HashStatus = 'ok' | 'mismatch' | 'not-recomputable';
 export type SealStatus = 'ok' | 'invalid' | 'unknown-key' | 'malformed';
@@ -12,7 +12,7 @@ export type SealStatus = 'ok' | 'invalid' | 'unknown-key' | 'malformed';
 export interface EntryResult {
   id: string;
   seq: number | null;
-  kind: 'record' | 'tombstone' | 'unknown';
+  kind: 'record' | 'tombstone' | 'audit' | 'unknown';
   ok: boolean;
   hash: HashStatus;
   seal: SealStatus;
@@ -24,12 +24,12 @@ export async function verifyEntry(entry: ChainEntry, keyset: KeySet): Promise<En
   const raw = entry as Partial<ChainEntry> & { [key: string]: unknown };
   const id = typeof raw.id === 'string' ? raw.id : '(no id)';
   const seq = typeof raw.chain?.seq === 'number' ? raw.chain.seq : null;
-  const kind = raw.format === RECORD_FORMAT ? 'record' : raw.format === TOMBSTONE_FORMAT ? 'tombstone' : 'unknown';
+  const kind = raw.format === RECORD_FORMAT ? 'record' : raw.format === TOMBSTONE_FORMAT ? 'tombstone' : raw.format === AUDIT_FORMAT ? 'audit' : 'unknown';
   if (kind === 'unknown') errors.push(`Unknown format ${JSON.stringify(raw.format)}`);
   if (!isSha256Hex(raw.hash)) errors.push('Missing or malformed hash');
 
   let hash: HashStatus = 'not-recomputable';
-  if (kind === 'record' && isSha256Hex(raw.hash)) {
+  if ((kind === 'record' || kind === 'audit') && isSha256Hex(raw.hash)) {
     const computed = await computeRecordHash(entry as Parameters<typeof computeRecordHash>[0]);
     hash = computed === raw.hash ? 'ok' : 'mismatch';
     if (hash === 'mismatch') errors.push('Content does not match its hash: the record was changed after sealing');
@@ -64,8 +64,9 @@ async function checkSeal(entry: ChainEntry, keyset: KeySet, errors: string[]): P
     errors.push('Seal signature does not verify: the hash was not sealed by this key');
     return 'invalid';
   }
-  if (!isTombstone(entry) && entryKey.retiredAt && entry.server?.receivedAt > entryKey.retiredAt) {
-    errors.push(`Sealed at ${entry.server.receivedAt}, after key ${entryKey.kid} was retired at ${entryKey.retiredAt}`);
+  const sealedAt = isTombstone(entry) ? undefined : 'server' in entry ? entry.server?.receivedAt : entry.at;
+  if (sealedAt && entryKey.retiredAt && sealedAt > entryKey.retiredAt) {
+    errors.push(`Sealed at ${sealedAt}, after key ${entryKey.kid} was retired at ${entryKey.retiredAt}`);
     return 'invalid';
   }
   return 'ok';

@@ -37,3 +37,13 @@ test('omits undefined object members but rejects other non-JSON values', () => {
 test('sha256 matches the published test vector', async () => {
   assert.equal(await sha256Hex('abc'), 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad');
 });
+
+test('the country list is the official ISO 3166-1 set, with no retired or reserved codes', async () => {
+  const { COUNTRY_CODES, isCountryCode } = await import('../src/core/index.ts');
+  assert.equal(COUNTRY_CODES.length, 250, '249 official codes plus XK');
+  assert.equal(new Set(COUNTRY_CODES).size, COUNTRY_CODES.length, 'no duplicates');
+  for (const ok of ['US', 'DE', 'LV', 'AR', 'JP', 'ZA', 'NL', 'BE', 'GB', 'XK']) assert.equal(isCountryCode(ok), true, ok);
+  for (const bad of ['UK', 'DD', 'YU', 'SU', 'EU', 'UN', 'AC', 'IC', 'ZZ', 'us', 'USA', '', 'U']) assert.equal(isCountryCode(bad), false, bad);
+  const names = new Intl.DisplayNames(['en'], { type: 'region', fallback: 'none' });
+  assert.equal(new Set(COUNTRY_CODES.map((code) => names.of(code))).size, COUNTRY_CODES.length, 'every code has a distinct name');
+});

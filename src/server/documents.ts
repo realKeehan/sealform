@@ -67,9 +67,13 @@ const DURATION = /^P(?!$)(\d+Y)?(\d+M)?(\d+W)?(\d+D)?$/;
 
 export class DocumentRegistry {
   private readonly versions = new Map<string, Map<string, LoadedDocument>>();
+  /** Status set from the admin dashboard; it overrides the status in document.json. */
+  private readonly overrides = new Map<string, DocumentStatus>();
+  private checks = new Map<string, Check>();
 
   static async load(dir: string, checks: Map<string, Check>): Promise<DocumentRegistry> {
     const registry = new DocumentRegistry();
+    registry.checks = checks;
     for (const id of await subdirs(dir)) {
       for (const version of await subdirs(join(dir, id))) {
         const doc = await loadVersion(join(dir, id, version), checks);
@@ -96,9 +100,47 @@ export class DocumentRegistry {
     return this.versions.get(id)?.get(version);
   }
 
+  status(doc: LoadedDocument): DocumentStatus {
+    return this.overrides.get(key(doc.manifest.id, doc.manifest.version)) ?? doc.manifest.status;
+  }
+
+  /** Applies saved overrides without the publish checks; used when loading from the database. */
+  restoreStatus(id: string, version: string, status: DocumentStatus): void {
+    if (this.get(id, version)) this.overrides.set(key(id, version), status);
+  }
+
+  /**
+   * Publishes, closes or returns a version to draft. Publishing closes any other published version of
+   * the same document, so exactly one is open at a time. Returns every change made, for the audit log.
+   */
+  setStatus(id: string, version: string, status: DocumentStatus): { id: string; version: string; from: DocumentStatus; to: DocumentStatus }[] {
+    const doc = this.get(id, version);
+    if (!doc) throw new Error(`No document ${id}@${version}`);
+    if (status === 'published') {
+      for (const kind of doc.manifest.requiredChecks) {
+        if (!this.checks.get(kind)?.enabled) throw new Error(`Cannot publish: check "${kind}" is not configured`);
+      }
+    }
+    const changes: { id: string; version: string; from: DocumentStatus; to: DocumentStatus }[] = [];
+    if (status === 'published') {
+      for (const other of this.versions.get(id)!.values()) {
+        if (other !== doc && this.status(other) === 'published') {
+          changes.push({ id, version: other.manifest.version, from: 'published', to: 'closed' });
+          this.overrides.set(key(id, other.manifest.version), 'closed');
+        }
+      }
+    }
+    const from = this.status(doc);
+    if (from !== status) {
+      changes.push({ id, version, from, to: status });
+      this.overrides.set(key(id, version), status);
+    }
+    return changes;
+  }
+
   /** The one published version of a document. Two published versions at once is a config error. */
   current(id: string): LoadedDocument | undefined {
-    const published = [...(this.versions.get(id)?.values() ?? [])].filter((doc) => doc.manifest.status === 'published');
+    const published = [...(this.versions.get(id)?.values() ?? [])].filter((doc) => this.status(doc) === 'published');
     if (published.length > 1) throw new Error(`${id} has more than one published version; close the old one`);
     return published[0];
   }
@@ -123,7 +165,16 @@ async function loadVersion(dir: string, checks: Map<string, Check>): Promise<Loa
     const text = (await readFile(join(dir, `${lang}.md`), 'utf8')).replace(/\r\n?/g, '\n');
     texts.set(lang, { lang, text, sha256: await sha256Hex(text) });
   }
-  return { manifest, manifestSha256: await sha256Canonical(manifest), texts };
+  return { manifest, manifestSha256: await sha256Canonical(signerVisible(manifest)), texts };
+}
+
+/**
+ * The part of a manifest the signer sees. Only this is hashed into records, so operational settings
+ * (status, retention, listing) can change without breaking the hash older records point to.
+ */
+export function signerVisible(manifest: DocumentManifest) {
+  const { id, version, title, category, languages, governingLang, disclosure, fields, consents } = manifest;
+  return { id, version, title, category, languages, governingLang, disclosure, fields, consents };
 }
 
 function validateManifest(value: unknown, where: string): DocumentManifest {
@@ -162,6 +213,10 @@ function validateManifest(value: unknown, where: string): DocumentManifest {
     if (!consent || typeof consent.name !== 'string' || typeof consent.label !== 'string' || typeof consent.required !== 'boolean') fail('every consent needs name, label and required');
   }
   return m as DocumentManifest;
+}
+
+function key(id: string, version: string): string {
+  return `${id}@${version}`;
 }
 
 async function subdirs(dir: string): Promise<string[]> {

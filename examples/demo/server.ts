@@ -7,7 +7,7 @@ import { createServer } from 'node:http';
 import { extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { generateKeyPair, KEYSET_FORMAT, type KeySet, type PrivateKeyFile } from '../../src/core/index.ts';
-import { createSealform } from '../../src/server/index.ts';
+import { createSealform, hashPassword } from '../../src/server/index.ts';
 
 const here = fileURLToPath(new URL('.', import.meta.url));
 const root = join(here, '..', '..');
@@ -32,7 +32,15 @@ const sealform = await createSealform({
   publicOrigin: origin,
   operator: { name: 'Demo Studio', email: 'legal@example.com' },
   limits: { signPerWindow: 100 },
+  adminPath: '/_sf',
 });
+
+// Demo only: a throwaway owner so the dashboard can be opened. Never do this in production; create
+// the first owner with `sealform admin create`.
+if (sealform.admin!.accountCount() === 0) {
+  sealform.admin!.createAccount({ email: 'owner@example.com', name: 'Demo Owner', role: 'owner', passwordHash: await hashPassword('demo demo demo demo'), mustChangePassword: false, now: new Date().toISOString() });
+  console.log('Demo owner: owner@example.com / "demo demo demo demo"  ->  http://localhost:' + port + '/_sf/');
+}
 
 const files: Record<string, string> = {
   '/': join(here, 'index.html'),

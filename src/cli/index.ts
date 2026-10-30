@@ -22,7 +22,10 @@ Commands
   keygen --kid <id> [--dir <path>]       Create an Ed25519 sealing key. Writes <id>.private.jwk.json
                                          (keep it secret, outside the web root) and adds the public
                                          key to sealform-keys.json in the same directory.
-  verify <record.json> --keys <src>      Verify one record or tombstone.
+  admin create --data <dir> --key <private-key-file> --email <e> --name <n> [--role owner|admin|reviewer]
+                                         Create a dashboard account with a one-time temporary password,
+                                         printed once. The first account should be an owner.
+  verify <record.json> --keys <src>      Verify one record, tombstone or audit entry.
   verify-chain <records.jsonl> --keys <src> [--start-seq <n>] [--start-prev <hash>]
                                          Verify every entry and the links between them.
 
@@ -44,6 +47,8 @@ async function main(argv: string[]): Promise<number> {
   switch (command) {
     case 'keygen':
       return keygen(rest);
+    case 'admin':
+      return admin(rest);
     case 'verify':
       return verify(rest);
     case 'verify-chain':
@@ -76,6 +81,50 @@ async function keygen(args: string[]): Promise<number> {
   console.log(`Public key set: ${keysetPath}`);
   console.log('  Publish it at /.well-known/sealform-keys.json. Keep old keys in it after rotation.');
   return 0;
+}
+
+async function admin(args: string[]): Promise<number> {
+  const [sub, ...rest] = args;
+  if (sub !== 'create') throw new UsageError('Usage: sealform admin create --data <dir> --key <private-key-file> --email <e> --name <n> [--role owner]');
+  const { values } = parseArgs({
+    args: rest,
+    options: { data: { type: 'string' }, key: { type: 'string' }, email: { type: 'string' }, name: { type: 'string' }, role: { type: 'string', default: 'owner' } },
+  });
+  if (!values.data || !values.key || !values.email || !values.name) throw new UsageError('admin create needs --data, --key, --email and --name');
+  // Loaded on demand so verifying records never needs the server code or SQLite.
+  const { SqliteStore, AdminStore, ROLES, hashPassword } = await import('../server/index.ts');
+  const { importSealingKey } = await import('../core/index.ts');
+  if (!ROLES.includes(values.role as never)) throw new UsageError(`--role must be one of ${ROLES.join(', ')}`);
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(values.email)) throw new UsageError('--email is not a valid address');
+
+  const key = await importSealingKey(JSON.parse(await readFile(values.key, 'utf8')));
+  const store = await SqliteStore.open(resolve(values.data));
+  try {
+    const db = new AdminStore(store.database, store.dataDir);
+    if (db.accountByEmail(values.email)) throw new UsageError(`An account for ${values.email} already exists`);
+    const password = randomPassword();
+    const account = db.createAccount({
+      email: values.email,
+      name: values.name,
+      role: values.role as 'owner' | 'admin' | 'reviewer',
+      passwordHash: await hashPassword(password),
+      mustChangePassword: true,
+      now: new Date().toISOString(),
+    });
+    await db.audit(key, { at: new Date().toISOString(), actor: 'system', action: 'account.create', target: account.id, details: { email: account.email, role: account.role, via: 'cli' }, ip: 'cli' });
+    console.log(`Created ${account.role} ${account.email}.`);
+    console.log(`Temporary password (shown once, change it at first sign-in): ${password}`);
+    if (account.role === 'owner') console.log('Owners must also set up two-factor sign-in before using the dashboard.');
+  } finally {
+    store.close();
+  }
+  return 0;
+}
+
+function randomPassword(): string {
+  const alphabet = 'abcdefghjkmnpqrstuvwxyz23456789';
+  const bytes = crypto.getRandomValues(new Uint8Array(25));
+  return Array.from(bytes, (b) => alphabet[b % alphabet.length]).join('').match(/.{5}/g)!.join('-');
 }
 
 async function verify(args: string[]): Promise<number> {
