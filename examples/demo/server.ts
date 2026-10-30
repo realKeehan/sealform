@@ -33,7 +33,7 @@ const sealform = await createSealform({
   publicOrigin: origin,
   operator: { name: 'Demo Studio', email: 'legal@example.com' },
   limits: { signPerWindow: 100 },
-  adminPath: '/_sf',
+  adminPath: '/login',
   // SITE_DIR=/path/to/dist also serves a built website, with the Site page in the dashboard.
   ...(process.env.SITE_DIR ? { site: { dir: process.env.SITE_DIR } } : {}),
   // Embedding from another origin, such as the site on :4719: ALLOWED_ORIGIN=http://localhost:4719
@@ -49,7 +49,7 @@ const sealform = await createSealform({
 // the first owner with `sealform admin create`.
 if (sealform.admin!.accountCount() === 0) {
   sealform.admin!.createAccount({ email: 'owner@example.com', name: 'Demo Owner', role: 'owner', passwordHash: await hashPassword('demo demo demo demo'), mustChangePassword: false, now: new Date().toISOString() });
-  console.log('Demo owner: owner@example.com / "demo demo demo demo"  ->  http://localhost:' + port + '/_sf/');
+  console.log('Demo owner: owner@example.com / "demo demo demo demo"  ->  http://localhost:' + port + '/login');
 }
 
 const files: Record<string, string> = {

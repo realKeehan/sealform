@@ -127,7 +127,7 @@ class Browser {
   async login(email: string, password = PASSWORD, code?: string) {
     const first = await this.post('/login', { email, password });
     if (code === undefined) return first;
-    assert.equal(first.location, `${BASE}/login/2fa`);
+    assert.equal(first.location, `${BASE}/2fa`);
     return this.post('/login/2fa', { code });
   }
 }
@@ -136,10 +136,14 @@ test('the dashboard is closed until you sign in, and the login page leaks nothin
   const app = await start('closed');
   try {
     const browser = new Browser(app);
+    // The dashboard's own address is the sign-in page, with no redirect and no admin chrome.
     const home = await browser.get('/');
-    assert.equal(home.status, 303);
-    assert.equal(home.location, `${BASE}/login`);
-    assert.equal((await browser.get('/submissions')).status, 303);
+    assert.equal(home.status, 200);
+    assert.match(home.text, new RegExp(`<form method="post" action="${BASE}"`));
+    assert.doesNotMatch(home.text, /Sign out|href="\/_sf\/submissions"/);
+    const deep = await browser.get('/submissions');
+    assert.equal(deep.status, 303);
+    assert.equal(deep.location, `${BASE}/`);
     const login = await browser.get('/login');
     assert.equal(login.status, 200);
     assert.match(login.headers.get('content-security-policy')!, /default-src 'none'/);
@@ -207,9 +211,9 @@ test('an owner is forced to set up two-factor, and then must supply a fresh code
     // A new sign-in now needs a code, and the code just used cannot be used again.
     const second = new Browser(app);
     const step1 = await second.post('/login', { email: 'owner@example.com', password: PASSWORD });
-    assert.equal(step1.location, `${BASE}/login/2fa`);
+    assert.equal(step1.location, `${BASE}/2fa`);
     assert.equal((await second.get('/submissions')).status, 303, 'password alone is not enough');
-    const pendingPage = await second.get('/login/2fa');
+    const pendingPage = await second.get('/2fa');
     assert.equal(pendingPage.status, 200);
     assert.doesNotMatch(pendingPage.text, /Sign out|href="\/_sf\/submissions"/, 'no admin chrome before the code is entered');
     const replay = await second.post('/login/2fa', { code });
@@ -486,7 +490,7 @@ test('changing the password signs out other sessions and logging out ends the se
     const first = await ownerSession(app);
     const other = new Browser(app);
     await other.login('owner@example.com').then(async (step) => {
-      assert.equal(step.location, `${BASE}/login/2fa`);
+      assert.equal(step.location, `${BASE}/2fa`);
     });
     // Sign in fully on a second browser using a fresh code.
     clock += 30_000;
@@ -1194,4 +1198,44 @@ test('the operator side is checked too, an unknown operator profile fails at sta
   }
   const base = { documentsDir: FIXTURES, sealingKey: privateFile, keySet: keyset, publicOrigin: ORIGIN, operator: { name: 'E', email: 'e@example.com' }, log: () => {} };
   await assert.rejects(createSealform({ ...base, dataDir: join(dir, 'op-bad'), operatorJurisdiction: 'XX' }), /operatorJurisdiction XX is not a loaded profile/);
+});
+
+
+test('with the dashboard mounted at /login, that address is the sign-in and failed attempts stay on it', async () => {
+  const app = await start('entry', { adminPath: '/login' });
+  try {
+    const call = (path: string, init: RequestInit = {}) =>
+      fetch(`${app.url}${path}`, { redirect: 'manual', ...init, headers: { origin: ORIGIN, ...(init.headers as Record<string, string> | undefined) } });
+    for (const path of ['/login', '/login/']) {
+      const page = await call(path);
+      assert.equal(page.status, 200, path);
+      const html = await page.text();
+      assert.match(html, /<form method="post" action="\/login"/);
+      assert.match(html, /name="email"/);
+    }
+    const form = (email: string, password: string) => ({ method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ email, password }).toString() });
+
+    const wrong = await call('/login', form('owner@example.com', 'not the password'));
+    assert.equal(wrong.status, 401);
+    assert.match(await wrong.text(), /action="\/login"/, 'the form posts back to the same address');
+
+    const ok = await call('/login', form('owner@example.com', PASSWORD));
+    assert.equal(ok.status, 303);
+    assert.equal(ok.headers.get('location'), '/login/');
+    const cookie = ok.headers.get('set-cookie')!.split(';')[0]!;
+
+    // Signed in, the same address is the dashboard; an owner without two-factor is sent to set it up.
+    const inside = await call('/login', { headers: { cookie } });
+    assert.equal(inside.status, 303);
+    assert.equal(inside.headers.get('location'), '/login/account?m=need2fa');
+    assert.equal((await call('/login/account', { headers: { cookie } })).status, 200);
+
+    const stranger = await call('/login/submissions');
+    assert.equal(stranger.status, 303);
+    assert.equal(stranger.headers.get('location'), '/login/');
+    assert.equal((await call('/login/login')).status, 200, 'the older address still works');
+    assert.equal((await fetch(`${app.url}/sealform/api/documents/example-agreement`)).status, 200, 'the signing API is unaffected');
+  } finally {
+    await app.stop();
+  }
 });

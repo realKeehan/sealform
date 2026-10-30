@@ -181,7 +181,7 @@ and it serves it, with two controls a static host does not have:
 ```js
 const sealform = await createSealform({
   /* ... */
-  adminPath: '/_sf',
+  adminPath: '/login',
   site: { dir: '/home/you/site/dist', headers: { 'content-security-policy': "default-src 'self'" } },
 });
 ```
@@ -203,10 +203,12 @@ scoped to the whole host (it stays HttpOnly and SameSite=Strict).
 
 ### The admin dashboard
 
-Set `adminPath` to turn it on, and pick a path that nothing links to:
+Set `adminPath` to turn it on. `'/login'` is a good choice: the dashboard's own address is then its
+sign-in page, so you just go to `https://your-site/login`. The path is not a secret; the sign-in (and
+Cloudflare Access if you use it) is what protects the dashboard:
 
 ```js
-const sealform = await createSealform({ /* ... */ adminPath: '/_sf' });
+const sealform = await createSealform({ /* ... */ adminPath: '/login' });
 ```
 
 To put Turnstile on the sign-in page, give the dashboard your public site key. The secret is the same
@@ -216,7 +218,7 @@ key, so it is never left unprotected by accident:
 ```js
 const sealform = await createSealform({
   /* ... */
-  adminPath: '/_sf',
+  adminPath: '/login',
   botCheck: new TurnstileCheck(process.env.TURNSTILE_SECRET),
   adminTurnstileSiteKey: '0x4AAA...',
 });
