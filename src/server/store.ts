@@ -4,10 +4,10 @@
 //   <dataDir>/records/<id>.json | .png | .pdf
 //   <dataDir>/chain.jsonl            one entry per line, in sequence order
 
-import { appendFile, mkdir, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { ZERO_HASH, type ChainEntry, type ChainLink, type SealformRecord } from '../core/index.ts';
+import { isTombstone, toTombstone, ZERO_HASH, type ChainEntry, type ChainLink, type SealformRecord, type Tombstone } from '../core/index.ts';
 
 export interface SessionRow {
   id: string;
@@ -173,6 +173,47 @@ export class SqliteStore {
       await writeFile(join(this.recordsDir, `${record.id}.json`), line + '\n', { mode: 0o600 });
       await appendFile(join(this.dataDir, 'chain.jsonl'), line + '\n', { mode: 0o600 });
       return record;
+    };
+    const result = this.queue.then(run, run);
+    this.queue = result.catch(() => undefined);
+    return result;
+  }
+
+  /**
+   * Removes personal data from one record while retaining its original chain link and seal.
+   * Pause other writer processes before maintenance. Mail, envelopes and backups have separate
+   * retention policies. Retrying repairs file mirrors after an interrupted cleanup.
+   */
+  tombstone(id: string, now = new Date()): Promise<Tombstone> {
+    const run = async (): Promise<Tombstone> => {
+      if (!/^[A-Za-z0-9_-]+$/.test(id)) throw new Error('Invalid record id');
+      this.db.exec('BEGIN IMMEDIATE');
+      let removed: Tombstone;
+      try {
+        const summary = this.summary(id);
+        const entry = this.getEntry(id);
+        if (!summary || !entry) throw new Error('No such record');
+        if (summary.hold) throw new Error('A legal hold prevents removal');
+        removed = isTombstone(entry) ? entry : toTombstone(entry as SealformRecord, now);
+        this.db.prepare(
+          `UPDATE records SET signer_name = NULL, email = NULL, country = NULL,
+           received_at = NULL, pdf_sha256 = NULL, receipt_token_hash = NULL,
+           application_status = 'withdrawn', tombstoned_at = ?, entry_json = ? WHERE id = ?`,
+        ).run(removed.tombstonedAt, JSON.stringify(removed), id);
+        this.db.exec('COMMIT');
+      } catch (error) {
+        this.db.exec('ROLLBACK');
+        throw error;
+      }
+      // Revoke database receipts first. A failure below is safe to retry, without a new timestamp.
+      const recordPath = join(this.recordsDir, id + '.json');
+      await writeFile(recordPath + '.tmp', JSON.stringify(removed) + '\n', { mode: 0o600 });
+      await rename(recordPath + '.tmp', recordPath);
+      const chainPath = join(this.dataDir, 'chain.jsonl');
+      await writeFile(chainPath + '.tmp', this.entries().map(entry => JSON.stringify(entry) + '\n').join(''), { mode: 0o600 });
+      await rename(chainPath + '.tmp', chainPath);
+      await Promise.all(['.png', '.pdf'].map(extension => rm(join(this.recordsDir, id + extension), { force: true })));
+      return removed;
     };
     const result = this.queue.then(run, run);
     this.queue = result.catch(() => undefined);
