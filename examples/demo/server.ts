@@ -33,6 +33,8 @@ const sealform = await createSealform({
   operator: { name: 'Demo Studio', email: 'legal@example.com' },
   limits: { signPerWindow: 100 },
   adminPath: '/_sf',
+  // Embedding from another origin, such as the site on :4719: ALLOWED_ORIGIN=http://localhost:4719
+  ...(process.env.ALLOWED_ORIGIN ? { allowedOrigins: [process.env.ALLOWED_ORIGIN] } : {}),
   // Try Turnstile with Cloudflare's test keys: TURNSTILE_SITE_KEY=1x00000000000000000000AA
   // TURNSTILE_SECRET=1x0000000000000000000000000000000AA (the 2x... pair always fails).
   ...(process.env.TURNSTILE_SECRET && process.env.TURNSTILE_SITE_KEY

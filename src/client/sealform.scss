@@ -87,6 +87,30 @@
   ol {
     margin: 0 0 0.75rem;
   }
+  // Host sites often reset these; the agreement text must always read as written.
+  h3,
+  h4,
+  h5,
+  h6,
+  strong {
+    font-weight: 700;
+  }
+  em {
+    font-style: italic;
+  }
+  ul,
+  ol {
+    padding-left: 1.4em;
+  }
+  ul {
+    list-style: disc;
+  }
+  ol {
+    list-style: decimal;
+  }
+  li + li {
+    margin-top: 0.25rem;
+  }
 }
 
 .sf-notices {
