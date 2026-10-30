@@ -24,6 +24,7 @@ import {
   verifyPassword,
   verifyTotp,
 } from './auth.ts';
+import { accessToken, type AccessIdentity, type CloudflareAccess } from './access.ts';
 import { AdminStore, ROLES, type Account, type AdminSession, type Role } from './db.ts';
 import { csrfField, html, layout, raw, shortDate, type Raw } from './html.ts';
 
@@ -40,6 +41,8 @@ export interface AdminOptions {
   botCheck: BotCheck;
   /** Public Turnstile site key; the widget is shown on the sign-in page when set. */
   turnstileSiteKey: string | undefined;
+  /** When set, Cloudflare Access does the sign-in and password and two-factor are not used. */
+  access: CloudflareAccess | undefined;
   now: () => Date;
   log: (message: string) => void;
 }
@@ -80,6 +83,7 @@ export async function createAdmin(options: AdminOptions) {
   for (const row of db.documentStatuses()) documents.restoreStatus(row.documentId, row.version, row.status);
   const loginLimiter = new RateLimiter(20, 10 * 60_000, () => options.now().getTime());
   const secure = options.origin.startsWith('https:');
+  const sso = options.access;
   const cssPath = fileURLToPath(new URL('./admin.css', import.meta.url));
   let css: string | undefined;
 
@@ -209,6 +213,28 @@ export async function createAdmin(options: AdminOptions) {
   }
 
   // Login ----------------------------------------------------------------------------------------
+
+  /**
+   * Cloudflare Access already proved who this is. The email must also belong to an enabled dashboard
+   * account, so an Access policy that is too loose cannot let a stranger in. Creates the session and
+   * lets the current request carry on.
+   */
+  function ssoSignIn(ctx: Ctx, identity: AccessIdentity): void {
+    const account = db.accountByEmail(identity.email);
+    const log = (result: string) =>
+      db.logSignIn({ at: nowIso(), accountId: account?.id ?? null, email: identity.email, ip: ctx.ip, userAgent: header(ctx.req, 'user-agent'), result });
+    if (!account || account.disabled) {
+      log(account ? 'access-disabled' : 'access-no-account');
+      throw new HttpError(403, `Cloudflare Access recognised ${identity.email}, but there is no active dashboard account for that address. Ask an owner to add it.`);
+    }
+    db.purgeSessions(nowIso());
+    const setCookie = startSession(ctx, account, 'active');
+    const token = setCookie.split(';')[0]!.slice(COOKIE.length + 1);
+    ctx.session = db.sessionByToken(hashToken(token))!;
+    ctx.account = account;
+    ctx.res.setHeader('set-cookie', setCookie);
+    log('access-ok');
+  }
 
   function loginPage(ctx: Ctx, error?: string, status = 200): void {
     if (options.turnstileSiteKey) ctx.turnstile = true;
@@ -720,7 +746,9 @@ export async function createAdmin(options: AdminOptions) {
       html`<h1>My account</h1>
       ${error ? html`<p class="flash flash--error" role="alert">${error}</p>` : ''}
       <p>${acct.name}, ${acct.email}, role ${acct.role}.</p>
-      <section class="card">
+      ${sso
+        ? html`<section class="card"><h2>Sign-in</h2><p>Sign-in is handled by Cloudflare Access. Your password and two-factor settings are not used here; manage them with your Access identity provider.</p></section>`
+        : html`      <section class="card">
         <h2>Password</h2>
         <form method="post" action="${base}/account/password" class="stack narrow">${csrf}
           <label>Current password <input type="password" name="current" autocomplete="current-password" required></label>
@@ -751,7 +779,7 @@ export async function createAdmin(options: AdminOptions) {
               </form>`
             : html`<p>Off. ${acct.role === 'owner' ? 'Owners must turn it on.' : 'Recommended.'}</p>
               <form method="post" action="${base}/account/2fa/start" class="inline">${csrf}<button type="submit">Set up two-factor sign-in</button></form>`}
-      </section>
+      </section>`}
       <section class="card">
         <h2>Where you are signed in</h2>
         <div class="table-wrap"><table>
@@ -770,6 +798,7 @@ export async function createAdmin(options: AdminOptions) {
     const form = await readForm(ctx);
     checkPost(ctx, form);
     const acct = ctx.account!;
+    if (sso && (action === 'password' || action.startsWith('2fa/'))) throw new HttpError(404, 'Not found');
     if (action === 'password') {
       const next = form.get('next') ?? '';
       if (!(await verifyPassword(form.get('current') ?? '', acct.passwordHash))) return myAccount(ctx, 'Your current password is not right.', 400);
@@ -858,37 +887,63 @@ export async function createAdmin(options: AdminOptions) {
         res.end(css);
         return true;
       }
-      if (path === '/login') {
-        if (method === 'POST') await login(ctx);
-        else loginPage(ctx);
-        return true;
-      }
-      if (path === '/login/2fa') {
-        await twoFactor(ctx);
-        return true;
-      }
+      if (sso) {
+        // Every request must carry a valid Access token, and the session must belong to that person.
+        const identity = await sso.verify(accessToken(req.headers));
+        if (!identity) throw new HttpError(403, 'This dashboard is only reachable through Cloudflare Access. Open it from its normal address and sign in there.');
+        if (path === '/login') {
+          if (method === 'GET') {
+            redirect(ctx, '/');
+            return true;
+          }
+          throw new HttpError(404, 'Not found');
+        }
+        if (path === '/login/2fa') throw new HttpError(404, 'Not found');
+        if (!loadSession(ctx, 'active') || ctx.account!.email !== identity.email) {
+          if (ctx.session) db.deleteSession(ctx.session.id);
+          delete ctx.session;
+          delete ctx.account;
+          ssoSignIn(ctx, identity);
+        }
+      } else {
+        if (path === '/login') {
+          if (method === 'POST') await login(ctx);
+          else loginPage(ctx);
+          return true;
+        }
+        if (path === '/login/2fa') {
+          await twoFactor(ctx);
+          return true;
+        }
 
-      if (!loadSession(ctx, 'active')) {
-        if (method === 'GET') redirect(ctx, '/login');
-        else throw new HttpError(401, 'Sign in again');
-        return true;
+        if (!loadSession(ctx, 'active')) {
+          if (method === 'GET') redirect(ctx, '/login');
+          else throw new HttpError(401, 'Sign in again');
+          return true;
+        }
       }
 
       if (path === '/logout' && method === 'POST') {
         const form = await readForm(ctx);
         checkPost(ctx, form);
         db.deleteSession(ctx.session!.id);
-        redirect(ctx, '/login', cookie('', 0));
+        if (sso) {
+          // Ending only the dashboard session would sign straight back in; end the Access session too.
+          res.writeHead(303, { ...securityHeaders, location: sso.logoutUrl, 'set-cookie': cookie('', 0) });
+          res.end();
+        } else {
+          redirect(ctx, '/login', cookie('', 0));
+        }
         return true;
       }
 
       const acct = ctx.account!;
       const onAccountPage = path === '/account' || path.startsWith('/account/');
-      if (acct.mustChangePassword && !(path === '/account' || path === '/account/password')) {
+      if (!sso && acct.mustChangePassword && !(path === '/account' || path === '/account/password')) {
         redirect(ctx, '/account?m=mustchange');
         return true;
       }
-      if (acct.role === 'owner' && !acct.totpSecret && !onAccountPage) {
+      if (!sso && acct.role === 'owner' && !acct.totpSecret && !onAccountPage) {
         redirect(ctx, '/account?m=need2fa');
         return true;
       }

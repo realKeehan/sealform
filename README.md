@@ -159,6 +159,11 @@ dashboard page keeps a policy that forbids scripts. To try it locally without an
 with Cloudflare's test keys: `TURNSTILE_SITE_KEY=1x00000000000000000000AA
 TURNSTILE_SECRET=1x0000000000000000000000000000000AA npm run demo`.
 
+To use **Cloudflare Access with Google** instead of passwords, set `adminAccess` with your team domain
+and application audience. sealform then verifies Cloudflare's signed token on every dashboard request
+and matches its email to a dashboard account. Setup steps are in
+[docs/CLOUDFLARE-ACCESS.md](docs/CLOUDFLARE-ACCESS.md).
+
 Create the first owner from the command line. The temporary password is printed once:
 
 ```bash

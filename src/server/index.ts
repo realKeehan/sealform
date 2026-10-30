@@ -30,6 +30,7 @@ import { DocumentRegistry, type LoadedDocument } from './documents.ts';
 import { NoBotCheck, RateLimiter, type BotCheck } from './guards.ts';
 import { clientIp, header, HttpError, readJson, sendBytes, sendJson, type ClientIpSource } from './http.ts';
 import { OutboxMailer, type Mailer } from './mailer.ts';
+import { CloudflareAccess, type AccessConfig } from './admin/access.ts';
 import { createAdmin } from './admin/index.ts';
 import { renderCertificate } from './pdf.ts';
 import { AdminStore } from './admin/db.ts';
@@ -63,6 +64,12 @@ export interface SealformConfig {
    * same secret as the public form.
    */
   adminTurnstileSiteKey?: string;
+  /**
+   * Put the dashboard behind Cloudflare Access (Google sign-in or whatever your Access policy allows).
+   * Access does the login; the dashboard verifies Cloudflare's signed token on every request and
+   * matches its email to a dashboard account. Passwords and two-factor are then not used.
+   */
+  adminAccess?: AccessConfig;
   botCheck?: BotCheck;
   mailer?: Mailer;
   checks?: Map<string, Check>;
@@ -92,7 +99,11 @@ export async function createSealform(config: SealformConfig): Promise<Sealform> 
   const checks = config.checks ?? defaultChecks();
   const botCheck = config.botCheck ?? new NoBotCheck();
   // Validate configuration before opening anything, so a bad config does not leave the database open.
-  if (config.adminPath && botCheck.name === 'turnstile' && !config.adminTurnstileSiteKey) {
+  // Checked first so a typo in the team domain or audience fails before anything is opened.
+  const access = config.adminAccess ? new CloudflareAccess(config.adminAccess, () => now().getTime()) : undefined;
+  if (access && !config.adminPath) throw new Error('adminAccess is set but adminPath is not, so there is no dashboard to protect');
+  if (access && config.adminTurnstileSiteKey) throw new Error('adminTurnstileSiteKey has no effect with adminAccess: there is no password form to protect');
+  if (config.adminPath && !access && botCheck.name === 'turnstile' && !config.adminTurnstileSiteKey) {
     throw new Error('adminTurnstileSiteKey is required when the dashboard is on and botCheck is Turnstile');
   }
   if (config.adminTurnstileSiteKey && botCheck.name !== 'turnstile') {
@@ -128,6 +139,7 @@ export async function createSealform(config: SealformConfig): Promise<Sealform> 
         checks,
         botCheck,
         turnstileSiteKey: config.adminTurnstileSiteKey,
+        access,
         now,
         log,
       })
@@ -413,6 +425,7 @@ function receiptMail(
 
 export { defaultChecks, CheckNotConfiguredError, type Check } from './checks.ts';
 export { hashPassword, passwordProblem, ROLES, type Role } from './admin/index.ts';
+export { CloudflareAccess, type AccessConfig, type AccessIdentity } from './admin/access.ts';
 export { AdminStore } from './admin/db.ts';
 export { DocumentRegistry, type DocumentManifest, type FieldSpec, type ConsentSpec } from './documents.ts';
 export { NoBotCheck, RateLimiter, TurnstileCheck, type BotCheck } from './guards.ts';

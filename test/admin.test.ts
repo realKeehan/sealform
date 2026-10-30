@@ -6,8 +6,8 @@ import { join } from 'node:path';
 import { crc32, deflateSync } from 'node:zlib';
 import { after, before, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { generateKeyPair, KEYSET_FORMAT, verifyChain, type KeySet } from '../src/core/index.ts';
-import { createSealform, hashPassword } from '../src/server/index.ts';
+import { generateKeyPair, KEYSET_FORMAT, toBase64Url, utf8, verifyChain, type KeySet } from '../src/core/index.ts';
+import { CloudflareAccess, createSealform, hashPassword } from '../src/server/index.ts';
 import { base32Encode, hotp, newTotpSecret, verifyTotp } from '../src/server/admin/auth.ts';
 
 const FIXTURES = fileURLToPath(new URL('./fixtures/documents', import.meta.url));
@@ -53,7 +53,7 @@ test('a TOTP code is accepted once and not replayed', () => {
   assert.equal(verifyTotp(secret, old, now, null), null, 'three steps old');
 });
 
-async function start(name: string) {
+async function start(name: string, overrides: Partial<Parameters<typeof createSealform>[0]> = {}) {
   const sealform = await createSealform({
     dataDir: join(dir, name),
     documentsDir: FIXTURES,
@@ -65,6 +65,7 @@ async function start(name: string) {
     log: () => {},
     now: () => new Date(clock),
     limits: { signPerWindow: 1000 },
+    ...overrides,
   });
   const server = createServer(sealform.handler);
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -93,8 +94,8 @@ class Browser {
     this.app = app;
   }
 
-  async get(path: string) {
-    return this.send('GET', path);
+  async get(path: string, headers: Record<string, string> = {}) {
+    return this.send('GET', path, undefined, headers);
   }
 
   async post(path: string, form: Record<string, string>, headers: Record<string, string> = {}) {
@@ -596,4 +597,179 @@ test('Turnstile settings that would leave the dashboard unprotected or unverifia
   await assert.rejects(createSealform({ ...base, dataDir: join(dir, 'ts-b'), adminPath: BASE, adminTurnstileSiteKey: 'key' }), /botCheck is not a TurnstileCheck/);
   const ok = await createSealform({ ...base, dataDir: join(dir, 'ts-c'), adminPath: BASE, botCheck: new TurnstileCheck('secret'), adminTurnstileSiteKey: 'key' });
   ok.close();
+});
+
+
+// Cloudflare Access ---------------------------------------------------------------------------------
+
+const TEAM = 'example-team.cloudflareaccess.com';
+const AUD = 'a1b2c3d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0a1b2';
+const KID = 'access-key-1';
+
+async function rsaKey() {
+  return (await crypto.subtle.generateKey({ name: 'RSASSA-PKCS1-v1_5', modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' }, true, ['sign', 'verify'])) as CryptoKeyPair;
+}
+
+const accessKeys = await rsaKey();
+const otherKeys = await rsaKey();
+const accessJwk = { ...(await crypto.subtle.exportKey('jwk', accessKeys.publicKey)), kid: KID, alg: 'RS256', use: 'sig' };
+
+function certsFetch() {
+  const stub = {
+    calls: 0,
+    fetch: (async (url: string | URL | Request) => {
+      stub.calls++;
+      assert.equal(String(url), `https://${TEAM}/cdn-cgi/access/certs`);
+      return new Response(JSON.stringify({ keys: [accessJwk] }), { status: 200 });
+    }) as typeof fetch,
+  };
+  return stub;
+}
+
+function b64(value: unknown): string {
+  return toBase64Url(utf8(JSON.stringify(value)));
+}
+
+async function jwt(
+  claims: Record<string, unknown> = {},
+  options: { key?: CryptoKey; header?: Record<string, unknown>; tamper?: boolean } = {},
+): Promise<string> {
+  const nowS = Math.floor(clock / 1000);
+  const payload = { iss: `https://${TEAM}`, aud: [AUD], email: 'owner@example.com', sub: 'user-1', iat: nowS, nbf: nowS, exp: nowS + 3600, ...claims };
+  const header = { alg: 'RS256', kid: KID, typ: 'JWT', ...options.header };
+  const signed = `${b64(header)}.${b64(payload)}`;
+  const sig = new Uint8Array(await crypto.subtle.sign({ name: 'RSASSA-PKCS1-v1_5' }, options.key ?? accessKeys.privateKey, utf8(signed)));
+  const token = `${signed}.${toBase64Url(sig)}`;
+  if (options.tamper) {
+    const [h, , s] = token.split('.');
+    return `${h}.${b64({ ...payload, email: 'attacker@example.com' })}.${s}`;
+  }
+  return token;
+}
+
+test('Access tokens are accepted only when signature, issuer, audience, expiry and email all check out', async () => {
+  const stub = certsFetch();
+  const access = new CloudflareAccess({ teamDomain: TEAM, audience: AUD, fetch: stub.fetch }, () => clock);
+  const good = await access.verify(await jwt());
+  assert.equal(good?.email, 'owner@example.com');
+  assert.equal((await access.verify(await jwt({ aud: AUD, email: 'Ada@Example.COM' })))?.email, 'ada@example.com', 'string aud accepted, email lowercased');
+
+  const bad: [string, string][] = [
+    ['wrong audience', await jwt({ aud: ['someone-elses-app'] })],
+    ['wrong issuer', await jwt({ iss: 'https://evil.cloudflareaccess.com' })],
+    ['expired', await jwt({ exp: Math.floor(clock / 1000) - 3600 })],
+    ['not yet valid', await jwt({ nbf: Math.floor(clock / 1000) + 3600 })],
+    ['no email (service token)', await jwt({ email: undefined })],
+    ['not an email', await jwt({ email: 'nope' })],
+    ['signed by another key', await jwt({}, { key: otherKeys.privateKey })],
+    ['tampered payload', await jwt({}, { tamper: true })],
+    ['unknown key id', await jwt({}, { header: { kid: 'other-kid' } })],
+    ['alg none', await jwt({}, { header: { alg: 'none' } })],
+    ['alg HS256', await jwt({}, { header: { alg: 'HS256' } })],
+    ['garbage', 'not.a.jwt'],
+    ['empty signature', `${b64({ alg: 'RS256', kid: KID })}.${b64({})}.`],
+  ];
+  for (const [name, token] of bad) assert.equal(await access.verify(token), null, name);
+  assert.equal(await access.verify(undefined), null);
+  assert.equal(await access.verify('x'.repeat(9000)), null);
+});
+
+test('Access keys are cached, and junk tokens cannot make the server hammer Cloudflare', async () => {
+  const stub = certsFetch();
+  const access = new CloudflareAccess({ teamDomain: TEAM, audience: AUD, fetch: stub.fetch }, () => clock);
+  for (let i = 0; i < 5; i++) await access.verify(await jwt());
+  assert.equal(stub.calls, 1, 'keys fetched once');
+  const unknown = await jwt({}, { header: { kid: 'rotated' } });
+  for (let i = 0; i < 5; i++) await access.verify(unknown);
+  assert.equal(stub.calls, 1, 'unknown kid does not refetch within a minute');
+  clock += 61_000;
+  await access.verify(unknown);
+  assert.equal(stub.calls, 2, 'one refetch after a minute');
+});
+
+test('Access settings that are wrong fail at startup', async () => {
+  assert.throws(() => new CloudflareAccess({ teamDomain: 'example.com', audience: AUD }), /myteam\.cloudflareaccess\.com/);
+  assert.throws(() => new CloudflareAccess({ teamDomain: 'evil.com/x.cloudflareaccess.com', audience: AUD }), /myteam/);
+  assert.throws(() => new CloudflareAccess({ teamDomain: TEAM, audience: 'short' }), /Application Audience/);
+  const base = { documentsDir: FIXTURES, sealingKey: privateFile, keySet: keyset, publicOrigin: ORIGIN, operator: { name: 'E', email: 'e@example.com' }, log: () => {} };
+  await assert.rejects(createSealform({ ...base, dataDir: join(dir, 'acc-a'), adminAccess: { teamDomain: TEAM, audience: AUD } }), /adminPath is not/);
+  await assert.rejects(createSealform({ ...base, dataDir: join(dir, 'acc-b'), adminPath: BASE, adminTurnstileSiteKey: 'k', adminAccess: { teamDomain: TEAM, audience: AUD } }), /no effect with adminAccess/);
+});
+
+test('behind Cloudflare Access the dashboard needs a valid token, signs in by email, and skips passwords', async () => {
+  const stub = certsFetch();
+  const app = await start('access', { adminAccess: { teamDomain: TEAM, audience: AUD, fetch: stub.fetch } });
+  try {
+    const browser = new Browser(app);
+    const as = async (email: string, claims: Record<string, unknown> = {}) => ({ 'cf-access-jwt-assertion': await jwt({ email, ...claims }) });
+
+    // No token, a forged token, or a token for another app: refused, with nothing about accounts leaked.
+    const none = await browser.get('/');
+    assert.equal(none.status, 403);
+    assert.match(none.text, /only reachable through Cloudflare Access/);
+    assert.equal((await browser.get('/', { 'cf-access-jwt-assertion': await jwt({}, { key: otherKeys.privateKey }) })).status, 403);
+    assert.equal((await browser.get('/', await as('owner@example.com', { aud: ['other-app'] }))).status, 403);
+    assert.equal((await browser.get('/admin.css')).status, 200, 'the stylesheet is public');
+
+    // A real Access identity with a dashboard account signs straight in: no password, no two-factor.
+    const home = await browser.get('/', await as('owner@example.com'));
+    assert.equal(home.status, 200);
+    assert.match(home.text, /Overview/);
+    assert.notEqual(browser.cookie, '');
+    assert.equal((await browser.get('/submissions', await as('owner@example.com'))).status, 200, 'owner needs no two-factor here');
+    assert.equal((await browser.get('/login', await as('owner@example.com'))).location, `${BASE}/`);
+    assert.equal((await browser.post('/login', { email: 'owner@example.com', password: PASSWORD }, await as('owner@example.com'))).status, 404, 'password form is gone');
+
+    const results = app.admin.signIns(null).map((row) => row.result);
+    assert.deepEqual(results.filter((r) => r.startsWith('access')), ['access-ok'], 'one sign-in logged, not one per request');
+
+    // A real Google identity with no dashboard account is refused.
+    const stranger = new Browser(app);
+    const refused = await stranger.get('/', await as('stranger@example.com'));
+    assert.equal(refused.status, 403);
+    assert.match(refused.text, /no active dashboard account/);
+    assert.ok(app.admin.signIns(null).some((r) => r.result === 'access-no-account'));
+    assert.equal(stranger.cookie, '');
+
+    // Disabled accounts are refused even with a valid Access identity.
+    const rae = app.admin.createAccount({ email: 'rae@example.com', name: 'Rae', role: 'reviewer', passwordHash: await hashPassword(PASSWORD), mustChangePassword: true, now: new Date(clock).toISOString() });
+    const raeBrowser = new Browser(app);
+    assert.equal((await raeBrowser.get('/submissions', await as('rae@example.com'))).status, 200, 'must-change-password is ignored in Access mode');
+    assert.equal((await raeBrowser.get('/accounts', await as('rae@example.com'))).status, 403, 'roles still apply');
+    app.admin.setDisabled(rae.id, true);
+    assert.equal((await raeBrowser.get('/submissions', await as('rae@example.com'))).status, 403);
+
+    // A session cannot be carried to a different identity.
+    const swap = new Browser(app);
+    await swap.get('/account', await as('owner@example.com'));
+    const swapped = await swap.get('/account', await as('co@example.com'));
+    assert.equal(swapped.status, 403, 'cookie from one person plus a token for someone without an account');
+
+    // The account page explains where sign-in lives and offers no password or two-factor forms.
+    const account = await browser.get('/account', await as('owner@example.com'));
+    assert.match(account.text, /handled by Cloudflare Access/);
+    assert.doesNotMatch(account.text, /Change password|Set up two-factor/);
+    const csrf = /name="csrf" value="([^"]+)"/.exec(account.text)![1]!;
+    assert.equal((await browser.post('/account/password', { csrf, current: 'x', next: 'y', again: 'y' }, await as('owner@example.com'))).status, 404);
+
+    // Signing out ends the Access session too, otherwise the next request would sign straight back in.
+    const out = await browser.post('/logout', { csrf }, await as('owner@example.com'));
+    assert.equal(out.status, 303);
+    assert.equal(out.location, `https://${TEAM}/cdn-cgi/access/logout`);
+    assert.equal(browser.cookie, '');
+  } finally {
+    await app.stop();
+  }
+});
+
+test('with Access on, the public signing API and key set stay open', async () => {
+  const stub = certsFetch();
+  const app = await start('access-public', { adminAccess: { teamDomain: TEAM, audience: AUD, fetch: stub.fetch } });
+  try {
+    assert.equal((await fetch(`${app.url}/sealform/api/documents/example-agreement`)).status, 200);
+    assert.equal((await fetch(`${app.url}/.well-known/sealform-keys.json`)).status, 200);
+    assert.equal((await fetch(`${app.url}${BASE}/`, { redirect: 'manual' })).status, 403);
+  } finally {
+    await app.stop();
+  }
 });
