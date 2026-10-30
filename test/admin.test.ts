@@ -448,6 +448,14 @@ test('publishing a document version closes the previous one, and the status surv
     const csrf = await owner.csrf('/documents');
     const list = await owner.get('/documents');
     assert.match(list.text, /Example Participation Agreement/);
+    const preview = await owner.get('/documents/example-agreement/EXAMPLE-1');
+    assert.equal(preview.status, 200);
+    assert.equal(preview.headers.get('cache-control'), 'no-store, no-transform');
+    assert.match(preview.text, /<article class="doc-preview" lang="en">/);
+    assert.match(preview.text, /<h4>Confidentiality<\/h4>/);
+    assert.match(preview.text, /<strong>unreleased material<\/strong>/);
+    assert.match(preview.text, /<ul><li>First point<\/li><li>Second point<\/li><\/ul>/);
+    assert.match(preview.text, /<details><summary>View exact Markdown source<\/summary><pre class="doc-text"># Example Participation Agreement/);
 
     const close = await owner.post('/documents/example-agreement/EXAMPLE-1/status', { csrf, status: 'closed' });
     assert.equal(close.location, `${BASE}/documents/example-agreement/EXAMPLE-1?m=saved`);
