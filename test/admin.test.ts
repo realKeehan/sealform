@@ -1120,3 +1120,78 @@ test('a site with no dashboard still serves, and the Site page explains when the
     await app.stop();
   }
 });
+
+
+// Retention review and the operator's own profile ---------------------------------------------------
+
+test('retention is compared with the usual claim period where signers live, and flagged when shorter', async () => {
+  const { durationYears, retentionReview, ProfileRegistry } = await import('../src/server/index.ts');
+  assert.equal(durationYears('P4Y'), 4);
+  assert.equal(durationYears('P6M'), 0.5);
+  assert.ok(Number.isNaN(durationYears('P')));
+  assert.ok(Number.isNaN(durationYears('four years')));
+  const registry = await ProfileRegistry.load();
+  const review = retentionReview('P4Y', [registry.resolve('DE'), registry.resolve('GB'), registry.resolve('GB'), registry.resolve('FR')]);
+  assert.deepEqual(review.rows.map((r) => r.id), ['GB', 'default', 'DE'], 'one row per profile, longest first');
+  assert.equal(review.longest!.id, 'GB');
+  assert.equal(review.tooShort, true, 'four years is shorter than the six in the UK');
+  assert.equal(retentionReview('P6Y', [registry.resolve('GB')]).tooShort, false);
+  assert.equal(retentionReview('P4Y', []).tooShort, false, 'no signatures, nothing to flag');
+
+  const { cp, readFile, writeFile } = await import('node:fs/promises');
+  const docs = join(dir, 'docs-retention');
+  await cp(FIXTURES, docs, { recursive: true });
+  const manifestPath = join(docs, 'example-agreement', 'EXAMPLE-1', 'document.json');
+  const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+  manifest.retention.signed = 'P2Y';
+  await writeFile(manifestPath, JSON.stringify(manifest));
+  const app = await start('retention', { documentsDir: docs });
+  try {
+    await sign(app, 'Ada Example', 'ada@example.com');
+    const owner = await ownerSession(app);
+    const page = (await owner.get('/documents/example-agreement/EXAMPLE-1')).text;
+    assert.match(page, /Germany: P3Y/);
+    assert.match(page, /kept for P2Y, shorter than the usual claim period in Germany \(P3Y\)/);
+    assert.match(page, /decide with advice/);
+  } finally {
+    await app.stop();
+  }
+  const fine = await start('retention-ok');
+  try {
+    await sign(fine, 'Ada Example', 'ada@example.com');
+    const owner = await ownerSession(fine);
+    const page = (await owner.get('/documents/example-agreement/EXAMPLE-1')).text;
+    assert.match(page, /Germany: P3Y/);
+    assert.doesNotMatch(page, /shorter than the usual claim period/, 'four years covers Germany');
+  } finally {
+    await fine.stop();
+  }
+});
+
+test('the operator side is checked too, an unknown operator profile fails at startup, and the check is audit-logged', async () => {
+  const docs = join(dir, 'docs-operator');
+  const { cp, readFile, writeFile } = await import('node:fs/promises');
+  await cp(FIXTURES, docs, { recursive: true });
+  const manifestPath = join(docs, 'partner-contract', 'PARTNER-1', 'document.json');
+  const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+  manifest.category = 'will';
+  await writeFile(manifestPath, JSON.stringify(manifest));
+  const app = await start('operator', { documentsDir: docs, operatorJurisdiction: 'US-CA' });
+  try {
+    const owner = await ownerSession(app);
+    const csrf = await owner.csrf('/contracts');
+    assert.match((await owner.get('/contracts')).text, /Your side is checked against <strong>California, United States/);
+    const form = { csrf, document: 'partner-contract@PARTNER-1', label: 'Will', name: 'Pat Partner', email: 'pat@example.org', days: '14', country: 'AR' };
+    const blocked = await owner.post('/contracts', form);
+    assert.equal(blocked.status, 409);
+    assert.match(blocked.text, /Where you operate \(California, United States\), a will document needs wet-ink/);
+    assert.equal(app.admin.envelopes().length, 0);
+    const allowed = await owner.post('/contracts', { ...form, override: 'Original will also signed in person' });
+    assert.equal(allowed.status, 200);
+    assert.equal(app.admin.auditEntries().find((e) => e.action === 'envelope.create')!.details.operatorProfile, 'US-CA');
+  } finally {
+    await app.stop();
+  }
+  const base = { documentsDir: FIXTURES, sealingKey: privateFile, keySet: keyset, publicOrigin: ORIGIN, operator: { name: 'E', email: 'e@example.com' }, log: () => {} };
+  await assert.rejects(createSealform({ ...base, dataDir: join(dir, 'op-bad'), operatorJurisdiction: 'XX' }), /operatorJurisdiction XX is not a loaded profile/);
+});

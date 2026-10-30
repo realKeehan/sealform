@@ -71,6 +71,11 @@ export interface SealformConfig {
   /** Folder of jurisdiction profile JSON files. Defaults to the profiles shipped with sealform. */
   profilesDir?: string;
   /**
+   * The profile id that applies to your own side of a contract, such as "US-CA". The dashboard checks it
+   * when a contract link is created, the same way it checks the signer's country.
+   */
+  operatorJurisdiction?: string;
+  /**
    * Public Turnstile site key for the dashboard sign-in page. Required when the dashboard is on and
    * `botCheck` is a TurnstileCheck, so the dashboard is never left unprotected by accident. Uses the
    * same secret as the public form.
@@ -138,6 +143,7 @@ export async function createSealform(config: SealformConfig): Promise<Sealform> 
 
   const documents = await DocumentRegistry.load(config.documentsDir, checks);
   const profiles = await ProfileRegistry.load(config.profilesDir);
+  if (config.operatorJurisdiction && !profiles.get(config.operatorJurisdiction)) throw new Error(`operatorJurisdiction ${config.operatorJurisdiction} is not a loaded profile`);
   const store = await SqliteStore.open(config.dataDir);
   const keysUrl = `${origin}/.well-known/sealform-keys.json`;
   // The dashboard shows site info and the site layer needs the dashboard's database, so one is bound late.
@@ -153,6 +159,7 @@ export async function createSealform(config: SealformConfig): Promise<Sealform> 
         keySet,
         checks,
         profiles,
+        operatorProfile: config.operatorJurisdiction ? profiles.get(config.operatorJurisdiction) : undefined,
         siteInfo: config.site ? () => site!.info() : undefined,
         signBase: base,
         mailer,
@@ -573,6 +580,6 @@ export { NoBotCheck, RateLimiter, TurnstileCheck, type BotCheck } from './guards
 export { OutboxMailer, toMime, type Mailer, type MailMessage } from './mailer.ts';
 export { SqliteStore, type RecordSummary } from './store.ts';
 export { SiteLayer, normalizePrefix, DEFAULT_PARKING_ALLOW, type SiteConfig } from './site.ts';
-export { ProfileRegistry, profileHealth, type Profile, type LoadedProfile } from './profiles.ts';
+export { ProfileRegistry, durationYears, profileHealth, retentionReview, type Profile, type LoadedProfile } from './profiles.ts';
 export { ValidationError } from './validate.ts';
 export { isCountryCode } from '../core/index.ts';

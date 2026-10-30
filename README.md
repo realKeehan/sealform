@@ -143,6 +143,11 @@ signer was shown that exact profile: its hash is stored in the record, so the ev
 rules and notices applied. A document whose `category` a country excludes is refused there with the
 reason. Countries without a profile get a cautious default, and the record says so.
 
+The dashboard also compares how long a document keeps signed records with the usual claim period in
+each signer's country (the document page flags a retention that is shorter), and `operatorJurisdiction`
+(for example `'US-CA'`) makes contract creation check your own side's law as well as the signer's. Both
+are flags for a decision, not rules: retention is also limited by data protection law.
+
 Profiles ship for the US (and California), UK, Germany, Latvia, Argentina, Japan, South Africa, the
 Netherlands and Belgium. They are plain JSON, so adding a country is a file:
 `id`, `eSignLaw`, `ageOfMajority`, `formRequirements`, `requiredFields`, `notices`, `sources` and so on

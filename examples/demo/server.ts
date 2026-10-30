@@ -26,13 +26,16 @@ if (!existsSync(keyPath)) {
 
 const sealform = await createSealform({
   dataDir,
-  documentsDir: join(root, 'test', 'fixtures', 'documents'),
+  // DOCUMENTS_DIR lets you try your own documents, for example a copy of signing/documents.
+  documentsDir: process.env.DOCUMENTS_DIR ?? join(root, 'test', 'fixtures', 'documents'),
   sealingKey: JSON.parse(await readFile(keyPath, 'utf8')) as PrivateKeyFile,
   keySet: keysetPath,
   publicOrigin: origin,
   operator: { name: 'Demo Studio', email: 'legal@example.com' },
   limits: { signPerWindow: 100 },
   adminPath: '/_sf',
+  // SITE_DIR=/path/to/dist also serves a built website, with the Site page in the dashboard.
+  ...(process.env.SITE_DIR ? { site: { dir: process.env.SITE_DIR } } : {}),
   // Embedding from another origin, such as the site on :4719: ALLOWED_ORIGIN=http://localhost:4719
   ...(process.env.ALLOWED_ORIGIN ? { allowedOrigins: [process.env.ALLOWED_ORIGIN] } : {}),
   // Try Turnstile with Cloudflare's test keys: TURNSTILE_SITE_KEY=1x00000000000000000000AA
