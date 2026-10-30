@@ -27,7 +27,7 @@ With Access on, the dashboard's own password and authenticator-app sign-in are n
    its authorized redirect URI to `https://<team>.cloudflareaccess.com/cdn-cgi/access/callback`. In Zero
    Trust, add Google under the authentication login methods and paste the client ID and secret.
 3. **Create a self-hosted Access application** for the dashboard path only, for example
-   `example.com/_sf`. Add an Allow policy that includes the email addresses of the people who should
+   `example.com/login`. Add an Allow policy that includes the email addresses of the people who should
    get in, and limit it to the Google login method. Do **not** cover `/sealform/api/*` or
    `/.well-known/sealform-keys.json`: signers and verifiers must reach those without logging in.
 4. **Copy the application's Audience (AUD) tag** from its overview page.
@@ -36,7 +36,7 @@ With Access on, the dashboard's own password and authenticator-app sign-in are n
    ```js
    const sealform = await createSealform({
      /* ... */
-     adminPath: '/_sf',
+     adminPath: '/login',
      adminAccess: {
        teamDomain: 'your-team.cloudflareaccess.com',
        audience: 'the AUD tag from step 4',

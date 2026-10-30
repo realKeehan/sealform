@@ -59,8 +59,9 @@ export interface SealformConfig {
   allowedOrigins?: string[];
   clientIp?: ClientIpSource;
   /**
-   * Mounts the admin dashboard at this path, such as "/_sf". Leave it unset to turn the dashboard off.
-   * Pick a path that is not linked anywhere; it is not a secret, only less noise from scanners.
+   * Mounts the admin dashboard at this path. "/login" is a good choice: the dashboard's own address is
+   * then its sign-in page. Leave it unset to turn the dashboard off. The path is not a secret; the
+   * sign-in is what protects it.
    */
   adminPath?: string;
   /**

@@ -258,7 +258,7 @@ export async function createAdmin(options: AdminOptions) {
       html`<section class="card narrow">
         <h1>Sign in</h1>
         ${error ? html`<p class="flash flash--error" role="alert">${error}</p>` : ''}
-        <form method="post" action="${base}/login" class="stack">
+        <form method="post" action="${base}" class="stack">
           <label>Email <input type="email" name="email" autocomplete="username" required></label>
           <label>Password <input type="password" name="password" autocomplete="current-password" required></label>
           ${options.turnstileSiteKey
@@ -309,7 +309,7 @@ export async function createAdmin(options: AdminOptions) {
     }
     if (account.totpSecret) {
       log('password-ok');
-      return redirect(ctx, '/login/2fa', startSession(ctx, account, 'pending'));
+      return redirect(ctx, '/2fa', startSession(ctx, account, 'pending'));
     }
     db.clearFailures(account.id);
     log('ok');
@@ -325,7 +325,7 @@ export async function createAdmin(options: AdminOptions) {
         <h1>Enter your code</h1>
         <p>Open your authenticator app and enter the 6-digit code for ${options.operatorName}.</p>
         ${error ? html`<p class="flash flash--error" role="alert">${error}</p>` : ''}
-        <form method="post" action="${base}/login/2fa" class="stack">
+        <form method="post" action="${base}/2fa" class="stack">
           <label>Code <input name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9 ]{6,7}" required autofocus></label>
           <button type="submit">Continue</button>
         </form>
@@ -335,7 +335,7 @@ export async function createAdmin(options: AdminOptions) {
   }
 
   async function twoFactor(ctx: Ctx): Promise<void> {
-    if (!loadSession(ctx, 'pending')) return redirect(ctx, '/login');
+    if (!loadSession(ctx, 'pending')) return redirect(ctx, '/');
     if (ctx.req.method === 'GET') return twoFactorPage(ctx);
     if (loginLimiter.take(`login:${ctx.ip}`) > 0) return twoFactorPage(ctx, 'Too many attempts. Wait a few minutes.', 429);
     const form = await readForm(ctx);
@@ -1179,7 +1179,7 @@ export async function createAdmin(options: AdminOptions) {
           }
           throw new HttpError(404, 'Not found');
         }
-        if (path === '/login/2fa') throw new HttpError(404, 'Not found');
+        if (path === '/login/2fa' || path === '/2fa') throw new HttpError(404, 'Not found');
         if (!loadSession(ctx, 'active') || ctx.account!.email !== identity.email) {
           if (ctx.session) db.deleteSession(ctx.session.id);
           delete ctx.session;
@@ -1187,18 +1187,21 @@ export async function createAdmin(options: AdminOptions) {
           ssoSignIn(ctx, identity);
         }
       } else {
-        if (path === '/login') {
+        // The dashboard's own address is the sign-in: /login when adminPath is "/login". The old
+        // <adminPath>/login and <adminPath>/login/2fa addresses keep working.
+        if (path === '/login' || (path === '/' && method === 'POST')) {
           if (method === 'POST') await login(ctx);
           else loginPage(ctx);
           return true;
         }
-        if (path === '/login/2fa') {
+        if (path === '/login/2fa' || path === '/2fa') {
           await twoFactor(ctx);
           return true;
         }
 
         if (!loadSession(ctx, 'active')) {
-          if (method === 'GET') redirect(ctx, '/login');
+          if (method === 'GET' && path === '/') loginPage(ctx);
+          else if (method === 'GET') redirect(ctx, '/');
           else throw new HttpError(401, 'Sign in again');
           return true;
         }
@@ -1213,7 +1216,7 @@ export async function createAdmin(options: AdminOptions) {
           res.writeHead(303, { ...securityHeaders, location: sso.logoutUrl, 'set-cookie': cookie('', 0) });
           res.end();
         } else {
-          redirect(ctx, '/login', cookie('', 0));
+          redirect(ctx, '/', cookie('', 0));
         }
         return true;
       }
