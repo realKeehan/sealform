@@ -1189,6 +1189,8 @@ export async function createAdmin(options: AdminOptions) {
           await twoFactor(ctx);
           return true;
         }
+        // The earlier <adminPath>/login addresses are deleted, not redirected.
+        if (path === '/login' || path === '/login/2fa') throw new HttpError(404, 'Not found');
 
         if (!loadSession(ctx, 'active')) {
           if (method === 'GET' && path === '/') loginPage(ctx);
