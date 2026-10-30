@@ -113,6 +113,8 @@ export interface MountOptions {
   lang?: string;
   /** Cloudflare Turnstile site key, when the server uses TurnstileCheck. */
   turnstileSiteKey?: string;
+  /** Must match the server's expected Turnstile action when configured. */
+  turnstileAction?: string;
   labels?: Partial<Labels>;
   onSigned?: (receipt: Receipt) => void;
 }
@@ -122,7 +124,7 @@ export interface MountedForm {
 }
 
 type TurnstileApi = {
-  render(el: HTMLElement, options: { sitekey: string; callback: (token: string) => void; 'expired-callback'?: () => void; 'error-callback'?: () => void }): string;
+  render(el: HTMLElement, options: { sitekey: string; action?: string; callback: (token: string) => void; 'expired-callback'?: () => void; 'error-callback'?: () => void }): string;
   reset(id?: string): void;
   remove(id?: string): void;
 };
@@ -280,6 +282,7 @@ export async function mountSealform(root: HTMLElement, options: MountOptions): P
     turnstile = await loadTurnstile();
     widgetId = turnstile.render(box, {
       sitekey: options.turnstileSiteKey,
+      ...(options.turnstileAction ? { action: options.turnstileAction } : {}),
       callback: (token) => {
         botToken = token;
       },
