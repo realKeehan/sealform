@@ -147,7 +147,8 @@ test('the dashboard is closed until you sign in, and the login page leaks nothin
     assert.match(home.headers.get('content-security-policy')!, /default-src 'none'/);
     assert.equal(home.headers.get('x-frame-options'), 'DENY');
     assert.match(home.headers.get('x-robots-tag')!, /noindex/);
-    assert.equal((await browser.get('/login')).location, `${BASE}/`, 'the old sign-in address is gone; it lands on the dashboard address');
+    assert.equal((await browser.get('/login')).status, 404, 'the old sign-in address is deleted, not redirected');
+    assert.equal((await browser.get('/login/2fa')).status, 404);
     assert.equal((await browser.post('/logout', {})).status, 401);
   } finally {
     await app.stop();
@@ -1231,9 +1232,8 @@ test('with the dashboard mounted at /login, that address is the sign-in and fail
     const stranger = await call('/login/submissions');
     assert.equal(stranger.status, 303);
     assert.equal(stranger.headers.get('location'), '/login/');
-    const retired = await call('/login/login');
-    assert.equal(retired.status, 303, 'the retired /login/login address is gone and lands on the sign-in');
-    assert.equal(retired.headers.get('location'), '/login/');
+    assert.equal((await call('/login/login')).status, 404, 'the retired /login/login address is deleted');
+    assert.equal((await call('/login/login/2fa')).status, 404);
     assert.equal((await fetch(`${app.url}/sealform/api/documents/example-agreement`)).status, 200, 'the signing API is unaffected');
   } finally {
     await app.stop();
