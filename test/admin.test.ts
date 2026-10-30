@@ -125,10 +125,10 @@ class Browser {
   }
 
   async login(email: string, password = PASSWORD, code?: string) {
-    const first = await this.post('/login', { email, password });
+    const first = await this.post('/', { email, password });
     if (code === undefined) return first;
     assert.equal(first.location, `${BASE}/2fa`);
-    return this.post('/login/2fa', { code });
+    return this.post('/2fa', { code });
   }
 }
 
@@ -144,11 +144,10 @@ test('the dashboard is closed until you sign in, and the login page leaks nothin
     const deep = await browser.get('/submissions');
     assert.equal(deep.status, 303);
     assert.equal(deep.location, `${BASE}/`);
-    const login = await browser.get('/login');
-    assert.equal(login.status, 200);
-    assert.match(login.headers.get('content-security-policy')!, /default-src 'none'/);
-    assert.equal(login.headers.get('x-frame-options'), 'DENY');
-    assert.match(login.headers.get('x-robots-tag')!, /noindex/);
+    assert.match(home.headers.get('content-security-policy')!, /default-src 'none'/);
+    assert.equal(home.headers.get('x-frame-options'), 'DENY');
+    assert.match(home.headers.get('x-robots-tag')!, /noindex/);
+    assert.equal((await browser.get('/login')).location, `${BASE}/`, 'the old sign-in address is gone; it lands on the dashboard address');
     assert.equal((await browser.post('/logout', {})).status, 401);
   } finally {
     await app.stop();
@@ -159,19 +158,19 @@ test('wrong passwords and unknown emails get the same answer, and five failures 
   const app = await start('lockout');
   try {
     const browser = new Browser(app);
-    const unknown = await browser.post('/login', { email: 'nobody@example.com', password: 'whatever whatever' });
-    const wrong = await browser.post('/login', { email: 'owner@example.com', password: 'not the password' });
+    const unknown = await browser.post('/', { email: 'nobody@example.com', password: 'whatever whatever' });
+    const wrong = await browser.post('/', { email: 'owner@example.com', password: 'not the password' });
     assert.equal(unknown.status, 401);
     assert.equal(wrong.status, 401);
     assert.equal(unknown.text.match(/do not match an account/)?.[0], wrong.text.match(/do not match an account/)?.[0]);
 
     // One failure so far; the fifth locks the account.
-    for (let i = 0; i < 4; i++) await browser.post('/login', { email: 'owner@example.com', password: 'not the password' });
-    const locked = await browser.post('/login', { email: 'owner@example.com', password: PASSWORD });
+    for (let i = 0; i < 4; i++) await browser.post('/', { email: 'owner@example.com', password: 'not the password' });
+    const locked = await browser.post('/', { email: 'owner@example.com', password: PASSWORD });
     assert.equal(locked.status, 423, 'correct password refused while locked');
 
     clock += 16 * 60_000;
-    const after = await browser.post('/login', { email: 'owner@example.com', password: PASSWORD });
+    const after = await browser.post('/', { email: 'owner@example.com', password: PASSWORD });
     assert.equal(after.status, 303);
 
     const results = app.admin.signIns(null).map((row) => row.result);
@@ -210,17 +209,17 @@ test('an owner is forced to set up two-factor, and then must supply a fresh code
 
     // A new sign-in now needs a code, and the code just used cannot be used again.
     const second = new Browser(app);
-    const step1 = await second.post('/login', { email: 'owner@example.com', password: PASSWORD });
+    const step1 = await second.post('/', { email: 'owner@example.com', password: PASSWORD });
     assert.equal(step1.location, `${BASE}/2fa`);
     assert.equal((await second.get('/submissions')).status, 303, 'password alone is not enough');
     const pendingPage = await second.get('/2fa');
     assert.equal(pendingPage.status, 200);
     assert.doesNotMatch(pendingPage.text, /Sign out|href="\/_sf\/submissions"/, 'no admin chrome before the code is entered');
-    const replay = await second.post('/login/2fa', { code });
+    const replay = await second.post('/2fa', { code });
     assert.equal(replay.status, 401, 'same code is refused');
     clock += 30_000;
     const fresh = hotp(secret, Math.floor(clock / 30000));
-    const ok = await second.post('/login/2fa', { code: fresh });
+    const ok = await second.post('/2fa', { code: fresh });
     assert.equal(ok.location, `${BASE}/`);
     assert.equal((await second.get('/submissions')).status, 200);
   } finally {
@@ -495,7 +494,7 @@ test('changing the password signs out other sessions and logging out ends the se
     // Sign in fully on a second browser using a fresh code.
     clock += 30_000;
     const secret = app.admin.account(app.owner.id)!.totpSecret!;
-    assert.equal((await other.post('/login/2fa', { code: hotp(secret, Math.floor(clock / 30000)) })).location, `${BASE}/`);
+    assert.equal((await other.post('/2fa', { code: hotp(secret, Math.floor(clock / 30000)) })).location, `${BASE}/`);
     assert.equal((await other.get('/sign-ins')).status, 200);
 
     const csrf = await first.csrf();
@@ -559,7 +558,7 @@ test('with Turnstile on, the sign-in page loads the widget and a bot never reach
   const app = { sealform, admin, url, owner: admin.accountByEmail('owner@example.com')!, stop: async () => {} } as unknown as App;
   try {
     const browser = new Browser(app);
-    const page = await browser.get('/login');
+    const page = await browser.get('/');
     assert.match(page.text, /class="cf-turnstile" data-sitekey="1x00000000000000000000AA"/);
     assert.match(page.text, /challenges\.cloudflare\.com\/turnstile\/v0\/api\.js/);
     const csp = page.headers.get('content-security-policy')!;
@@ -567,26 +566,26 @@ test('with Turnstile on, the sign-in page loads the widget and a bot never reach
     assert.match(csp, /frame-src https:\/\/challenges\.cloudflare\.com/);
 
     // Other dashboard pages keep the strict policy with no script source at all.
-    const twoFa = await browser.get('/login/2fa');
+    const twoFa = await browser.get('/2fa');
     assert.equal((twoFa.headers.get('content-security-policy') ?? '').includes('script-src'), false);
 
     // No token, or a bad one: refused before the password is looked at, and logged.
-    const missing = await browser.post('/login', { email: 'owner@example.com', password: PASSWORD });
+    const missing = await browser.post('/', { email: 'owner@example.com', password: PASSWORD });
     assert.equal(missing.status, 403);
     assert.match(missing.text, /bot check did not pass/);
-    const bad = await browser.post('/login', { email: 'owner@example.com', password: PASSWORD, 'cf-turnstile-response': 'bad-token' });
+    const bad = await browser.post('/', { email: 'owner@example.com', password: PASSWORD, 'cf-turnstile-response': 'bad-token' });
     assert.equal(bad.status, 403);
     assert.equal(browser.cookie, '', 'no session was issued');
 
     // Bots cannot lock the real account by hammering it.
-    for (let i = 0; i < 8; i++) await browser.post('/login', { email: 'owner@example.com', password: 'wrong wrong wrong', 'cf-turnstile-response': 'bad-token' });
+    for (let i = 0; i < 8; i++) await browser.post('/', { email: 'owner@example.com', password: 'wrong wrong wrong', 'cf-turnstile-response': 'bad-token' });
     assert.equal(admin.account(app.owner.id)!.failedLogins, 0);
     assert.equal(admin.signIns(null).every((row) => row.result === 'bot-check-failed'), true);
 
     // A passing token reaches the normal password check.
-    const wrongPassword = await browser.post('/login', { email: 'owner@example.com', password: 'wrong wrong wrong', 'cf-turnstile-response': 'good-token' });
+    const wrongPassword = await browser.post('/', { email: 'owner@example.com', password: 'wrong wrong wrong', 'cf-turnstile-response': 'good-token' });
     assert.equal(wrongPassword.status, 401);
-    const ok = await browser.post('/login', { email: 'owner@example.com', password: PASSWORD, 'cf-turnstile-response': 'good-token' });
+    const ok = await browser.post('/', { email: 'owner@example.com', password: PASSWORD, 'cf-turnstile-response': 'good-token' });
     assert.equal(ok.status, 303);
     assert.ok(bot.seen.includes('good-token'));
   } finally {
@@ -722,8 +721,7 @@ test('behind Cloudflare Access the dashboard needs a valid token, signs in by em
     assert.match(home.text, /Overview/);
     assert.notEqual(browser.cookie, '');
     assert.equal((await browser.get('/submissions', await as('owner@example.com'))).status, 200, 'owner needs no two-factor here');
-    assert.equal((await browser.get('/login', await as('owner@example.com'))).location, `${BASE}/`);
-    assert.equal((await browser.post('/login', { email: 'owner@example.com', password: PASSWORD }, await as('owner@example.com'))).status, 404, 'password form is gone');
+    assert.equal((await browser.post('/', { email: 'owner@example.com', password: PASSWORD }, await as('owner@example.com'))).status, 404, 'password form is gone');
 
     const results = app.admin.signIns(null).map((row) => row.result);
     assert.deepEqual(results.filter((r) => r.startsWith('access')), ['access-ok'], 'one sign-in logged, not one per request');
@@ -1233,7 +1231,9 @@ test('with the dashboard mounted at /login, that address is the sign-in and fail
     const stranger = await call('/login/submissions');
     assert.equal(stranger.status, 303);
     assert.equal(stranger.headers.get('location'), '/login/');
-    assert.equal((await call('/login/login')).status, 200, 'the older address still works');
+    const retired = await call('/login/login');
+    assert.equal(retired.status, 303, 'the retired /login/login address is gone and lands on the sign-in');
+    assert.equal(retired.headers.get('location'), '/login/');
     assert.equal((await fetch(`${app.url}/sealform/api/documents/example-agreement`)).status, 200, 'the signing API is unaffected');
   } finally {
     await app.stop();
