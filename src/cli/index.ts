@@ -25,6 +25,9 @@ Commands
   admin create --data <dir> --key <private-key-file> --email <e> --name <n> [--role owner|admin|reviewer]
                                          Create a dashboard account with a one-time temporary password,
                                          printed once. The first account should be an owner.
+  tombstone <id> --data <dir> --key <private-key-file> --confirm <id> --offline
+                                         Remove one record's personal data, preserving its chain proof.
+                                         Pause all signing writers first. Legal holds block removal.
   verify <record.json> --keys <src>      Verify one record, tombstone or audit entry.
   verify-chain <records.jsonl> --keys <src> [--start-seq <n>] [--start-prev <hash>]
                                          Verify every entry and the links between them.
@@ -49,6 +52,8 @@ async function main(argv: string[]): Promise<number> {
       return keygen(rest);
     case 'admin':
       return admin(rest);
+    case 'tombstone':
+      return tombstoneCommand(rest);
     case 'verify':
       return verify(rest);
     case 'verify-chain':
@@ -115,6 +120,33 @@ async function admin(args: string[]): Promise<number> {
     console.log(`Created ${account.role} ${account.email}.`);
     console.log(`Temporary password (shown once, change it at first sign-in): ${password}`);
     if (account.role === 'owner') console.log('Owners must also set up two-factor sign-in before using the dashboard.');
+  } finally {
+    store.close();
+  }
+  return 0;
+}
+
+async function tombstoneCommand(args: string[]): Promise<number> {
+  const { values, positionals } = parseArgs({ args, allowPositionals: true, options: {
+    data: { type: 'string' }, key: { type: 'string' }, confirm: { type: 'string' }, offline: { type: 'boolean', default: false },
+  } });
+  const [id] = positionals;
+  if (!id || !values.data || !values.key || values.confirm !== id || !values.offline) {
+    throw new UsageError('tombstone needs <id>, --data, --key, --confirm <id> and --offline; pause all signing writers first');
+  }
+  const { SqliteStore, AdminStore } = await import('../server/index.ts');
+  const { importSealingKey } = await import('../core/index.ts');
+  const key = await importSealingKey(JSON.parse(await readFile(values.key, 'utf8')));
+  // Refuse a mistyped data path instead of creating an empty store.
+  await access(join(resolve(values.data), 'sealform.sqlite'), constants.R_OK | constants.W_OK);
+  const store = await SqliteStore.open(resolve(values.data));
+  try {
+    const db = new AdminStore(store.database, store.dataDir);
+    if (!store.summary(id)) throw new UsageError('No such record');
+    await db.audit(key, { at: new Date().toISOString(), actor: 'system', action: 'record.tombstone.requested', target: id, details: { via: 'cli' }, ip: 'cli' });
+    const result = await store.tombstone(id);
+    await db.audit(key, { at: new Date().toISOString(), actor: 'system', action: 'record.tombstone.completed', target: id, details: { via: 'cli', hash: result.hash }, ip: 'cli' });
+    console.log('Tombstoned ' + id + '; chain proof retained.');
   } finally {
     store.close();
   }

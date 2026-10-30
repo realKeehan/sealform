@@ -309,3 +309,20 @@ problem privately.
 ## License
 
 [MIT](LICENSE)
+
+## Record cleanup
+
+The offline maintenance command removes one record's personal fields, receipt capability, PDF and
+signature image. Its original hash, seal and chain position remain as a verifiable tombstone.
+A legal hold blocks removal. Stop signing writers before running it; a separate maintenance process
+must not race an active server's file mirrors. Run the same command again after an interrupted
+cleanup to repair the mirrors.
+
+```bash
+sealform tombstone sf_EXAMPLE --data /private/data --key /private/sealing.private.jwk.json --confirm sf_EXAMPLE --offline
+```
+
+The supplied sealing key signs the maintenance audit events. Confirmation must exactly match the
+record id. This command does not remove copies already delivered by email, envelope metadata,
+outbox messages or historical backups; those require their own retention procedures. It does not
+guarantee physical erasure from storage media.
