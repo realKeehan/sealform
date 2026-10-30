@@ -114,7 +114,8 @@ export async function createAdmin(options: AdminOptions) {
     // Not "no-referrer": with that policy browsers send "Origin: null" on form posts, which the
     // same-origin check would then refuse. "same-origin" still sends nothing to other sites.
     'referrer-policy': 'same-origin',
-    'cache-control': 'no-store',
+    // Preserve visible document text and mailto links through intermediary HTML transforms.
+    'cache-control': 'no-store, no-transform',
     'x-robots-tag': 'noindex, nofollow',
   };
 

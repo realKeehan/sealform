@@ -450,6 +450,7 @@ test('publishing a document version closes the previous one, and the status surv
     assert.match(list.text, /Example Participation Agreement/);
     const preview = await owner.get('/documents/example-agreement/EXAMPLE-1');
     assert.equal(preview.status, 200);
+    assert.equal(preview.headers.get('cache-control'), 'no-store, no-transform');
     assert.match(preview.text, /<article class="doc-preview" lang="en">/);
     assert.match(preview.text, /<h4>Confidentiality<\/h4>/);
     assert.match(preview.text, /<strong>unreleased material<\/strong>/);
