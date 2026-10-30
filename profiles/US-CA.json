@@ -1,0 +1,51 @@
+{
+  "id": "US-CA",
+  "version": 1,
+  "name": "California, United States",
+  "parent": "US",
+  "eSignLaw": {
+    "name": "California Uniform Electronic Transactions Act",
+    "citation": "Cal. Civ. Code 1633.1 et seq."
+  },
+  "level": "ses",
+  "levelNote": "A signature cannot be denied legal effect only because it is electronic (Cal. Civ. Code 1633.7), when the parties agreed to transact electronically.",
+  "ageOfMajority": 18,
+  "formRequirements": [
+    {
+      "category": "will",
+      "requires": "wet-ink",
+      "note": "Wills are excluded from the ESIGN Act and from California UETA."
+    },
+    {
+      "category": "family",
+      "requires": "wet-ink",
+      "note": "Family-law documents are excluded from the ESIGN Act."
+    },
+    {
+      "category": "real-estate",
+      "requires": "notarization",
+      "note": "Deeds need notarization to be recorded."
+    }
+  ],
+  "requiredFields": [],
+  "notices": [
+    "Electronic signature law that applies: California Uniform Electronic Transactions Act. A signature cannot be denied legal effect only because it is electronic (Cal. Civ. Code 1633.7), when the parties agreed to transact electronically.",
+    "You must be at least 18 years old to sign this agreement.",
+    "If you are unsure whether this applies to you, ask for a paper alternative before signing."
+  ],
+  "privacyRegime": "ccpa",
+  "limitationPeriod": "P4Y",
+  "limitationNote": "Written contracts: four years (Cal. Code Civ. Proc. 337).",
+  "drafted": "2026-10-30",
+  "reviewedBy": null,
+  "sources": [
+    {
+      "title": "California Civil Code 1633.7 (leginfo)",
+      "url": "https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode=CIV&sectionNum=1633.7"
+    },
+    {
+      "title": "California Code of Civil Procedure 337 (leginfo)",
+      "url": "https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode=CCP&sectionNum=337"
+    }
+  ]
+}

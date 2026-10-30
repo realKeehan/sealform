@@ -76,6 +76,7 @@ export async function renderCertificate(input: PdfInput): Promise<Uint8Array> {
       ['Languages', record.server.acceptLanguage || '(none sent)'],
       ['Session opened', record.server.sessionOpenedAt],
       ['Checks', record.assurance.checks.map((check) => `${check.kind}: ${check.status}`).join(', ') || 'none'],
+      ...(record.jurisdiction ? [['Jurisdiction', `${record.jurisdiction.profile} v${record.jurisdiction.version}${record.jurisdiction.fallback ? ' (default profile)' : ''}`] as [string, string]] : []),
       ['Document SHA-256', record.document.sha256, mono],
       ['Chain position', `#${record.chain.seq}`],
       ['Previous record', record.chain.prevHash, mono],

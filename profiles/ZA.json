@@ -1,0 +1,45 @@
+{
+  "id": "ZA",
+  "version": 1,
+  "name": "South Africa",
+  "eSignLaw": {
+    "name": "Electronic Communications and Transactions Act 25 of 2002",
+    "citation": "ECTA sections 13 and 4 and Schedule 2"
+  },
+  "level": "ses",
+  "levelNote": "An electronic signature is not without legal force only because it is electronic. Where the law requires a signature and the parties have not agreed otherwise, an advanced electronic signature may be needed.",
+  "ageOfMajority": 18,
+  "formRequirements": [
+    {
+      "category": "will",
+      "requires": "wet-ink",
+      "note": "Wills are excluded from the ECTA."
+    },
+    {
+      "category": "real-estate",
+      "requires": "wet-ink",
+      "note": "Sales and long-term leases of land are excluded from the ECTA and need a signed written document."
+    }
+  ],
+  "requiredFields": [],
+  "notices": [
+    "Electronic signature law that applies: Electronic Communications and Transactions Act 25 of 2002. An electronic signature is not without legal force only because it is electronic. Where the law requires a signature and the parties have not agreed otherwise, an advanced electronic signature may be needed.",
+    "You must be at least 18 years old to sign this agreement.",
+    "If you are unsure whether this applies to you, ask for a paper alternative before signing."
+  ],
+  "privacyRegime": "popia",
+  "limitationPeriod": "P3Y",
+  "limitationNote": "General prescription period: three years (Prescription Act 68 of 1969, section 11).",
+  "drafted": "2026-10-30",
+  "reviewedBy": null,
+  "sources": [
+    {
+      "title": "Electronic Communications and Transactions Act (gov.za)",
+      "url": "https://www.gov.za/documents/electronic-communications-and-transactions-act"
+    },
+    {
+      "title": "Protection of Personal Information Act (gov.za)",
+      "url": "https://www.gov.za/documents/protection-personal-information-act"
+    }
+  ]
+}

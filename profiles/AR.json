@@ -1,0 +1,45 @@
+{
+  "id": "AR",
+  "version": 1,
+  "name": "Argentina",
+  "eSignLaw": {
+    "name": "Digital Signature Law 25.506 and the Civil and Commercial Code",
+    "citation": "Ley 25.506; Civil and Commercial Code arts. 286-288"
+  },
+  "level": "ses",
+  "levelNote": "An electronic signature is valid, but if its authenticity is disputed the person relying on it must prove it. A digital signature with a certificate is presumed authentic.",
+  "ageOfMajority": 18,
+  "formRequirements": [
+    {
+      "category": "will",
+      "requires": "wet-ink",
+      "note": "Wills must follow the formalities of the Civil and Commercial Code (handwritten or by public deed)."
+    },
+    {
+      "category": "real-estate",
+      "requires": "notarization",
+      "note": "Property transfers need a public deed (escritura publica)."
+    }
+  ],
+  "requiredFields": [],
+  "notices": [
+    "Electronic signature law that applies: Digital Signature Law 25.506 and the Civil and Commercial Code. An electronic signature is valid, but if its authenticity is disputed the person relying on it must prove it. A digital signature with a certificate is presumed authentic.",
+    "You must be at least 18 years old to sign this agreement.",
+    "If you are unsure whether this applies to you, ask for a paper alternative before signing."
+  ],
+  "privacyRegime": "ar-25326",
+  "limitationPeriod": "P5Y",
+  "limitationNote": "General period: five years (Civil and Commercial Code art. 2560); consumer claims: three.",
+  "drafted": "2026-10-30",
+  "reviewedBy": null,
+  "sources": [
+    {
+      "title": "Ley 25.326, personal data protection (argentina.gob.ar)",
+      "url": "https://www.argentina.gob.ar/normativa/nacional/64790/actualizacion"
+    },
+    {
+      "title": "Argentine legislation portal (search: Ley 25.506 firma digital)",
+      "url": "https://www.argentina.gob.ar/normativa"
+    }
+  ]
+}

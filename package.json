@@ -27,6 +27,7 @@
   },
   "files": [
     "dist",
+    "profiles",
     "README.md",
     "LICENSE",
     "SECURITY.md"

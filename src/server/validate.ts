@@ -16,6 +16,10 @@ export interface SignRequest {
   signature: { typedName: string; vector: JsonValue; png: Uint8Array };
   client: Record<string, JsonValue>;
   botToken?: string;
+  /** Hash of the jurisdiction profile the form showed, when the document asks for a country. */
+  profileSha256?: string;
+  /** Set when signing through a private contract link. */
+  envelopeToken?: string;
 }
 
 export class ValidationError extends Error {
@@ -61,6 +65,8 @@ export function parseSignRequest(body: unknown, manifest: DocumentManifest): Sig
     client: {},
   };
   if (typeof b.botToken === 'string') request.botToken = b.botToken.slice(0, 2048);
+  if (typeof b.profileSha256 === 'string' && HEX64.test(b.profileSha256)) request.profileSha256 = b.profileSha256;
+  if (typeof b.envelopeToken === 'string' && /^[A-Za-z0-9_-]{43}$/.test(b.envelopeToken)) request.envelopeToken = b.envelopeToken;
 
   const fields = isObject(b.fields) ? b.fields : {};
   for (const spec of manifest.fields) {

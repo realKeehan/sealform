@@ -6,11 +6,12 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { verifyChain, verifyEntry, type ChainEntry, type JsonValue, type KeySet, type SealformRecord, type SealingKey } from '../../core/index.ts';
+import { COUNTRY_CODES, isCountryCode, sha256Canonical, verifyChain, verifyEntry, type ChainEntry, type JsonValue, type KeySet, type SealformRecord, type SealingKey } from '../../core/index.ts';
 import type { Check } from '../checks.ts';
 import type { DocumentRegistry, DocumentStatus, LoadedDocument } from '../documents.ts';
 import { RateLimiter, type BotCheck } from '../guards.ts';
 import { header, HttpError } from '../http.ts';
+import { profileHealth, type ProfileRegistry } from '../profiles.ts';
 import type { SqliteStore } from '../store.ts';
 import {
   decoy,
@@ -25,7 +26,8 @@ import {
   verifyTotp,
 } from './auth.ts';
 import { accessToken, type AccessIdentity, type CloudflareAccess } from './access.ts';
-import { AdminStore, ROLES, type Account, type AdminSession, type Role } from './db.ts';
+import { AdminStore, ROLES, type Account, type AdminSession, type Envelope, type Role } from './db.ts';
+import type { Mailer } from '../mailer.ts';
 import { csrfField, html, layout, raw, shortDate, type Raw } from './html.ts';
 
 export interface AdminOptions {
@@ -37,6 +39,11 @@ export interface AdminOptions {
   sealingKey: SealingKey;
   keySet: KeySet;
   checks: Map<string, Check>;
+  profiles: ProfileRegistry;
+  /** Where the public signing API is mounted, used to build private signing links. */
+  signBase: string;
+  mailer: Mailer;
+  operator: { name: string; email: string };
   /** Checked on the sign-in form before any password work, so bots cannot probe or lock accounts. */
   botCheck: BotCheck;
   /** Public Turnstile site key; the widget is shown on the sign-in page when set. */
@@ -377,6 +384,17 @@ export async function createAdmin(options: AdminOptions) {
         <p>Sealing key <code>${options.sealingKey.kid}</code>. <a href="${base}/verify">Verify the full chain now</a></p>
       </section>
       <section class="card">
+        <h2>Jurisdiction profiles</h2>
+        <p class="muted">Facts about e-signature law by country, written from public sources. None has been reviewed by a lawyer unless it says so.</p>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Profile</th><th>Law</th><th>Drafted</th><th>Review</th></tr></thead>
+          <tbody>${options.profiles.all().map(({ profile }) => {
+            const health = profileHealth(profile, options.now());
+            return html`<tr class="${health.stale ? 'row-warn' : ''}"><td>${profile.id} ${profile.name}</td><td>${profile.eSignLaw.name}</td><td>${profile.drafted}${health.stale ? ' (older than a year)' : ''}</td><td>${profile.reviewedBy ? `${profile.reviewedBy.name}, ${profile.reviewedBy.on}` : 'not reviewed'}</td></tr>`;
+          })}</tbody>
+        </table></div>
+      </section>
+      <section class="card">
         <h2>Identity checks not configured</h2>
         <ul>${disabled.map((check) => html`<li><strong>${check.kind}</strong>: ${check.description}</li>`)}</ul>
       </section>`,
@@ -521,6 +539,7 @@ export async function createAdmin(options: AdminOptions) {
             <dt>Languages</dt><dd>${record.server.acceptLanguage}</dd>
             <dt>Client reported</dt><dd>${Object.entries(record.client).map(([k, v]) => `${k}: ${String(v)}`).join(', ')}</dd>
             <dt>Checks</dt><dd>${record.assurance.checks.map((c) => `${c.kind}: ${c.status}`).join(', ') || 'none'}</dd>
+            <dt>Jurisdiction</dt><dd>${record.jurisdiction ? `${record.jurisdiction.profile} v${record.jurisdiction.version}${record.jurisdiction.fallback ? ' (default, no country profile)' : ''}` : 'none'}</dd>
             <dt>Document</dt><dd>${record.document.id}@${record.document.version} (${record.document.lang}) <code>${record.document.sha256}</code></dd>
             <dt>Chain</dt><dd>#${record.chain.seq}, previous <code>${record.chain.prevHash}</code></dd>
             <dt>Record hash</dt><dd><code>${record.hash}</code></dd>
@@ -645,6 +664,169 @@ export async function createAdmin(options: AdminOptions) {
       await audit(ctx, 'document.status', `${change.id}@${change.version}`, { from: change.from, to: change.to });
     }
     redirect(ctx, `/documents/${doc.manifest.id}/${doc.manifest.version}?m=saved`);
+  }
+
+  // Contracts: private signing links ---------------------------------------------------------------
+
+  const EXPIRY_DAYS = [7, 14, 30, 60, 90];
+  const countryNames = new Intl.DisplayNames(['en'], { type: 'region', fallback: 'code' });
+
+  function envelopeState(env: Envelope): string {
+    return (env.status === 'open' || env.status === 'signing') && env.expiresAt < nowIso() ? 'expired' : env.status;
+  }
+
+  function contractsPage(ctx: Ctx, extra?: { created?: { link: string; label: string; email: string }; error?: string }, status = 200): void {
+    need(ctx, 'owner', 'admin');
+    const csrf = csrfField(ctx.session!.csrf);
+    const docs = documents.all().filter((d) => documents.status(d) === 'published' && !d.manifest.public && d.manifest.category !== 'disclosure');
+    page(
+      ctx,
+      'Contracts',
+      'contracts',
+      html`<h1>Contracts</h1>
+      <p class="muted">Send a private link to one person to sign a document that is not listed publicly. The link works once, expires, and fixes the signer's name and email.</p>
+      ${extra?.error ? html`<p class="flash flash--error" role="alert">${extra.error}</p>` : ''}
+      ${extra?.created
+        ? html`<section class="card notice" role="status"><h2>Link for ${extra.created.email}</h2>
+          <p>Send it to them privately. It is shown only once; sealform keeps only a hash of it, so it cannot be shown again. If it is lost, cancel this contract and make a new one.</p>
+          <p><code class="secret">${extra.created.link}</code></p></section>`
+        : ''}
+      <div class="table-wrap"><table>
+        <thead><tr><th>Contract</th><th>Signer</th><th>Document</th><th>Status</th><th>Expires</th></tr></thead>
+        <tbody>${db.envelopes().map((env) => html`<tr>
+          <td><a href="${base}/contracts/${env.id}">${env.label}</a></td>
+          <td>${env.signerName} (${env.signerEmail})</td>
+          <td>${env.documentId}@${env.documentVersion}</td>
+          <td><span class="pill pill--${envelopeState(env) === 'complete' ? 'published' : envelopeState(env)}">${envelopeState(env)}</span></td>
+          <td>${shortDate(env.expiresAt)}</td>
+        </tr>`)}</tbody>
+      </table></div>
+      <section class="card">
+        <h2>New contract link</h2>
+        ${docs.length
+          ? html`<form method="post" action="${base}/contracts" class="stack narrow">${csrf}
+          <label>Document <select name="document" required>${docs.map((d) => html`<option value="${d.manifest.id}@${d.manifest.version}">${d.manifest.title} (${d.manifest.version})</option>`)}</select></label>
+          <label>Label for your records <input name="label" required maxlength="120"></label>
+          <label>Signer's full legal name <input name="name" required maxlength="200"></label>
+          <label>Signer's email <input type="email" name="email" required maxlength="254"></label>
+          <label>Signer's country, to check the rules there <select name="country"><option value="">Not sure yet</option>${COUNTRY_CODES.map((code) => html`<option value="${code}">${countryNames.of(code) ?? code}</option>`)}</select></label>
+          <label>Link expires in <select name="days">${EXPIRY_DAYS.map((d) => html`<option value="${d}" ${d === 14 ? raw('selected') : ''}>${d} days</option>`)}</select></label>
+          <label class="check"><input type="checkbox" name="counter" value="1"> I will countersign after they sign</label>
+          <label>Reason, only if the country check below blocks this <input name="override" maxlength="300"></label>
+          <button type="submit">Create the link</button>
+        </form>`
+          : html`<p class="muted">No private document is published. A document is private when its <code>public</code> setting is false; publish one from Documents first.</p>`}
+      </section>`,
+      status,
+    );
+  }
+
+  async function createContract(ctx: Ctx): Promise<void> {
+    need(ctx, 'owner', 'admin');
+    const form = await readForm(ctx);
+    checkPost(ctx, form);
+    const [docId, version] = (form.get('document') ?? '').split('@');
+    const doc = docId && version ? documents.get(docId, version) : undefined;
+    if (!doc || documents.status(doc) !== 'published' || doc.manifest.public || doc.manifest.category === 'disclosure') throw new HttpError(400, 'Pick a published private document');
+    const label = (form.get('label') ?? '').trim();
+    const name = (form.get('name') ?? '').trim();
+    const email = (form.get('email') ?? '').trim().toLowerCase();
+    const days = Number(form.get('days'));
+    const country = (form.get('country') ?? '').trim();
+    if (!label || label.length > 120 || !name || name.length > 200 || !/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(email) || email.length > 254 || !EXPIRY_DAYS.includes(days) || (country && !isCountryCode(country))) {
+      throw new HttpError(400, 'Label, name, a valid email and an expiry from the list are needed');
+    }
+    // Review the signer's country before a link exists. A document the law there excludes from simple
+    // e-signatures needs a stated reason to proceed, and the reason is kept in the audit log.
+    const override = (form.get('override') ?? '').trim().slice(0, 300);
+    if (country) {
+      const { loaded } = options.profiles.resolve(country);
+      const needs = loaded.profile.formRequirements.find((r) => r.category === doc.manifest.category);
+      if (needs && !override) {
+        return contractsPage(ctx, { error: `In ${loaded.profile.name}, a ${doc.manifest.category} document needs ${needs.requires}, not a simple electronic signature. ${needs.note} Enter a reason to send it anyway.` }, 409);
+      }
+    }
+    const token = newToken();
+    const created = options.now();
+    const env = db.createEnvelope({
+      tokenHash: hashToken(token),
+      documentId: doc.manifest.id,
+      documentVersion: doc.manifest.version,
+      label,
+      signerName: name,
+      signerEmail: email,
+      signerCountry: country || null,
+      counterRequired: form.get('counter') === '1',
+      createdBy: ctx.account!.email,
+      createdAt: created.toISOString(),
+      expiresAt: new Date(created.getTime() + days * 86_400_000).toISOString(),
+      overrideReason: override || null,
+    });
+    await audit(ctx, 'envelope.create', env.id, { document: `${doc.manifest.id}@${doc.manifest.version}`, signer: email, expiresAt: env.expiresAt, countersign: env.counterRequired, country: country || null, override: override || null });
+    contractsPage(ctx, { created: { link: `${options.origin}${options.signBase}/c/${token}`, label, email } });
+  }
+
+  function contractPage(ctx: Ctx, env: Envelope): void {
+    need(ctx, 'owner', 'admin');
+    const csrf = csrfField(ctx.session!.csrf);
+    const state = envelopeState(env);
+    page(
+      ctx,
+      env.label,
+      'contracts',
+      html`<p><a href="${base}/contracts">Back to contracts</a></p>
+      <h1>${env.label}</h1>
+      <section class="card">
+        <dl class="facts">
+          <dt>Status</dt><dd><span class="pill pill--${state === 'complete' ? 'published' : state}">${state}</span></dd>
+          <dt>Document</dt><dd>${env.documentId}@${env.documentVersion}</dd>
+          <dt>Signer</dt><dd>${env.signerName} (${env.signerEmail})${env.signerCountry ? `, ${countryNames.of(env.signerCountry) ?? env.signerCountry}` : ''}</dd>
+          <dt>Created</dt><dd>${shortDate(env.createdAt)} by ${env.createdBy}</dd>
+          <dt>Expires</dt><dd>${shortDate(env.expiresAt)}</dd>
+          <dt>Countersignature</dt><dd>${env.counterRequired ? 'you will countersign' : 'not needed'}</dd>
+          ${env.overrideReason ? html`<dt>Country check overridden</dt><dd>${env.overrideReason}</dd>` : ''}
+          ${env.recordId ? html`<dt>Signed</dt><dd>${shortDate(env.signedAt)}, <a href="${base}/submissions/${env.recordId}">view the signed record</a></dd>` : ''}
+          ${env.countersignedAt ? html`<dt>Countersigned</dt><dd>${shortDate(env.countersignedAt)} by ${env.countersignedBy}</dd>` : ''}
+          ${env.finalHash ? html`<dt>Final hash</dt><dd><code>${env.finalHash}</code></dd>` : ''}
+          ${env.revokedAt ? html`<dt>Cancelled</dt><dd>${shortDate(env.revokedAt)}</dd>` : ''}
+        </dl>
+        <div class="actions">
+          ${env.status === 'awaiting-countersignature' ? html`<form method="post" action="${base}/contracts/${env.id}/countersign" class="inline">${csrf}<button type="submit">Countersign as ${ctx.account!.email}</button></form>` : ''}
+          ${env.status === 'open' || env.status === 'signing' ? html`<form method="post" action="${base}/contracts/${env.id}/revoke" class="inline">${csrf}<button type="submit">Cancel this link</button></form>` : ''}
+        </div>
+        ${env.status === 'awaiting-countersignature' ? html`<p class="muted">Countersigning seals your decision into the audit log with the signer's record hash, and emails the signer a confirmation.</p>` : ''}
+      </section>`,
+    );
+  }
+
+  async function contractAction(ctx: Ctx, id: string, action: string): Promise<void> {
+    need(ctx, 'owner', 'admin');
+    const form = await readForm(ctx);
+    checkPost(ctx, form);
+    const env = db.envelope(id);
+    if (!env) throw new HttpError(404, 'No such contract');
+    const at = nowIso();
+    if (action === 'revoke') {
+      if (!db.revokeEnvelope(id, at)) throw new HttpError(409, 'Only a link that has not been signed can be cancelled');
+      await audit(ctx, 'envelope.revoke', id, { signer: env.signerEmail });
+    } else if (action === 'countersign') {
+      if (env.status !== 'awaiting-countersignature' || !env.recordId || !env.recordHash) throw new HttpError(409, 'This contract is not waiting for a countersignature');
+      const finalHash = await sha256Canonical({ envelope: env.id, document: `${env.documentId}@${env.documentVersion}`, signerRecord: { id: env.recordId, hash: env.recordHash }, countersignedBy: ctx.account!.email, countersignedAt: at });
+      if (!db.countersignEnvelope(id, ctx.account!.email, at, finalHash)) throw new HttpError(409, 'This contract was already countersigned');
+      await audit(ctx, 'envelope.countersign', id, { record: env.recordId, recordHash: env.recordHash, finalHash, document: `${env.documentId}@${env.documentVersion}` });
+      options.mailer
+        .send({
+          to: env.signerEmail,
+          from: `${options.operator.name.replace(/[<>"\r\n]/g, '')} <${options.operator.email}>`,
+          replyTo: options.operator.email,
+          subject: `Countersigned: ${env.label}`,
+          text: [`${options.operator.name} countersigned "${env.label}" on ${at} UTC.`, '', `Your signed record: ${env.recordId}`, `Record SHA-256: ${env.recordHash}`, `Final SHA-256 of the completed agreement: ${finalHash}`, '', `Questions: ${options.operator.email}`].join('\n'),
+        })
+        .catch((error: unknown) => options.log(`countersign notice for ${id} not sent: ${error instanceof Error ? error.message : String(error)}`));
+    } else {
+      throw new HttpError(404, 'Not found');
+    }
+    redirect(ctx, `/contracts/${id}?m=saved`);
   }
 
   function accountsPage(ctx: Ctx, created?: { email: string; password: string }): void {
@@ -957,6 +1139,8 @@ export async function createAdmin(options: AdminOptions) {
         else if (parts[0] === 'submissions' && parts.length === 2) await submission(ctx, parts[1]!);
         else if (parts[0] === 'submissions' && parts.length === 3 && ['pdf', 'record.json', 'signature.png'].includes(parts[2]!)) await submissionFile(ctx, parts[1]!, parts[2]!);
         else if (path === '/documents') documentsPage(ctx);
+        else if (path === '/contracts') contractsPage(ctx);
+        else if (parts[0] === 'contracts' && parts.length === 2) contractPage(ctx, db.envelope(parts[1]!) ?? (() => { throw new HttpError(404, 'No such contract'); })());
         else if (parts[0] === 'documents' && parts.length === 3) documentPage(ctx, findDoc(parts[1]!, parts[2]!));
         else if (path === '/accounts') accountsPage(ctx);
         else if (path === '/account') myAccount(ctx);
@@ -970,6 +1154,8 @@ export async function createAdmin(options: AdminOptions) {
         if (parts[0] === 'submissions' && parts.length === 3 && parts[2] === 'status') await setStatus(ctx, parts[1]!);
         else if (parts[0] === 'submissions' && parts.length === 3 && parts[2] === 'hold') await setHold(ctx, parts[1]!);
         else if (parts[0] === 'documents' && parts.length === 4 && parts[3] === 'status') await setDocumentStatus(ctx, findDoc(parts[1]!, parts[2]!));
+        else if (path === '/contracts') await createContract(ctx);
+        else if (parts[0] === 'contracts' && parts.length === 3) await contractAction(ctx, parts[1]!, parts[2]!);
         else if (path === '/accounts') await accountAction(ctx, undefined, 'create');
         else if (parts[0] === 'accounts' && parts.length === 3) await accountAction(ctx, parts[1]!, parts[2]!);
         else if (parts[0] === 'account' && parts[1] === 'sessions' && parts[3] === 'revoke') await myAccountAction(ctx, 'revoke', parts[2]!);

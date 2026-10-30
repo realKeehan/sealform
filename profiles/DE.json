@@ -1,0 +1,51 @@
+{
+  "id": "DE",
+  "version": 1,
+  "name": "Germany",
+  "eSignLaw": {
+    "name": "eIDAS Regulation and German Civil Code",
+    "citation": "Regulation (EU) 910/2014 art. 25; BGB sections 126a and 126b"
+  },
+  "level": "ses",
+  "levelNote": "A simple electronic signature meets text form (section 126b). Where German law requires written form, only a qualified electronic signature or a handwritten one will do (sections 126 and 126a).",
+  "ageOfMajority": 18,
+  "formRequirements": [
+    {
+      "category": "suretyship",
+      "requires": "wet-ink",
+      "note": "Section 766 BGB excludes electronic form for a suretyship declaration."
+    },
+    {
+      "category": "will",
+      "requires": "wet-ink",
+      "note": "A will must be handwritten or made before a notary."
+    },
+    {
+      "category": "real-estate",
+      "requires": "notarization",
+      "note": "Property sales need a notary (section 311b BGB)."
+    }
+  ],
+  "requiredFields": [],
+  "notices": [
+    "Electronic signature law that applies: eIDAS Regulation and German Civil Code. A simple electronic signature meets text form (section 126b). Where German law requires written form, only a qualified electronic signature or a handwritten one will do (sections 126 and 126a).",
+    "You must be at least 18 years old to sign this agreement.",
+    "If these terms are standard terms, German law (sections 305 and following BGB) requires them to be clear and understandable; ask for a German copy if you need one.",
+    "If you are unsure whether this applies to you, ask for a paper alternative before signing."
+  ],
+  "privacyRegime": "gdpr",
+  "limitationPeriod": "P3Y",
+  "limitationNote": "Regular period: three years from the end of the year the claimant knew (section 195 BGB); outer caps are longer.",
+  "drafted": "2026-10-30",
+  "reviewedBy": null,
+  "sources": [
+    {
+      "title": "eIDAS Regulation (EU) 910/2014, art. 25 (EUR-Lex)",
+      "url": "https://eur-lex.europa.eu/eli/reg/2014/910/oj"
+    },
+    {
+      "title": "German Civil Code, English translation (gesetze-im-internet.de)",
+      "url": "https://www.gesetze-im-internet.de/englisch_bgb/"
+    }
+  ]
+}

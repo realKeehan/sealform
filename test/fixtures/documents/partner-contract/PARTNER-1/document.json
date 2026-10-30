@@ -1,0 +1,56 @@
+{
+  "id": "partner-contract",
+  "version": "PARTNER-1",
+  "title": "Example Partner Agreement",
+  "category": "services-contract",
+  "status": "published",
+  "public": false,
+  "languages": [
+    "en"
+  ],
+  "governingLang": "en",
+  "disclosure": {
+    "id": "esign",
+    "version": "esign-1"
+  },
+  "fields": [
+    {
+      "name": "legalName",
+      "label": "Full legal name",
+      "type": "text",
+      "required": true,
+      "role": "signerName"
+    },
+    {
+      "name": "email",
+      "label": "Email",
+      "type": "email",
+      "required": true,
+      "role": "receiptEmail"
+    },
+    {
+      "name": "country",
+      "label": "Country",
+      "type": "country",
+      "required": true,
+      "role": "country"
+    }
+  ],
+  "consents": [
+    {
+      "name": "esign",
+      "label": "I agree to sign electronically and have read the disclosure.",
+      "required": true
+    },
+    {
+      "name": "acceptVersion",
+      "label": "I accept version PARTNER-1 of this agreement.",
+      "required": true
+    }
+  ],
+  "requiredChecks": [],
+  "retention": {
+    "signed": "P6Y",
+    "unsigned": "P90D"
+  }
+}

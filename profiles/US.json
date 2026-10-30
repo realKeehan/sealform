@@ -1,0 +1,51 @@
+{
+  "id": "US",
+  "version": 1,
+  "name": "United States",
+  "eSignLaw": {
+    "name": "ESIGN Act and state UETA",
+    "citation": "15 U.S.C. 7001 et seq.; UETA as enacted by most states"
+  },
+  "level": "ses",
+  "levelNote": "A simple electronic signature is valid for most contracts when the signer intends to sign and consents to doing business electronically.",
+  "ageOfMajority": 18,
+  "ageNote": "In Alabama and Nebraska the age is 19, and in Mississippi 21.",
+  "formRequirements": [
+    {
+      "category": "will",
+      "requires": "wet-ink",
+      "note": "Wills are excluded from the ESIGN Act; a few states allow electronic wills under their own rules."
+    },
+    {
+      "category": "family",
+      "requires": "wet-ink",
+      "note": "Adoption, divorce and other family-law documents are excluded from the ESIGN Act."
+    },
+    {
+      "category": "real-estate",
+      "requires": "notarization",
+      "note": "Deeds and many property documents need notarization or recording formalities beyond a simple signature."
+    }
+  ],
+  "requiredFields": [],
+  "notices": [
+    "Electronic signature law that applies: ESIGN Act and state UETA. A simple electronic signature is valid for most contracts when the signer intends to sign and consents to doing business electronically.",
+    "You must be at least 18 years old to sign this agreement. In Alabama and Nebraska the age is 19, and in Mississippi 21.",
+    "If you are unsure whether this applies to you, ask for a paper alternative before signing."
+  ],
+  "privacyRegime": "us-state-laws",
+  "limitationPeriod": "P6Y",
+  "limitationNote": "Written-contract periods vary by state (California is four years, New York six); six is the longer common one.",
+  "drafted": "2026-10-30",
+  "reviewedBy": null,
+  "sources": [
+    {
+      "title": "ESIGN Act, 15 U.S.C. 7001 (Cornell LII)",
+      "url": "https://www.law.cornell.edu/uscode/text/15/7001"
+    },
+    {
+      "title": "ESIGN Act exceptions, 15 U.S.C. 7003 (Cornell LII)",
+      "url": "https://www.law.cornell.edu/uscode/text/15/7003"
+    }
+  ]
+}

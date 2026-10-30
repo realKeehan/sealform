@@ -74,6 +74,8 @@ export interface RecordBody {
   document: DocumentRef;
   disclosure: DocumentRef;
   envelope?: EnvelopeRef;
+  /** The jurisdiction profile shown to the signer; its hash binds the notices into the record. */
+  jurisdiction?: { profile: string; version: number; sha256: string; fallback: boolean };
   fields: { [name: string]: JsonValue };
   consent: { [name: string]: boolean };
   signature: SignatureEvidence;

@@ -11,9 +11,11 @@
 import { createHash, randomBytes } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { readFile, writeFile } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import {
   importSealingKey,
+  isCountryCode,
   KEYSET_FORMAT,
   prefixedId,
   RECORD_FORMAT,
@@ -31,8 +33,10 @@ import { NoBotCheck, RateLimiter, type BotCheck } from './guards.ts';
 import { clientIp, header, HttpError, readJson, sendBytes, sendJson, type ClientIpSource } from './http.ts';
 import { OutboxMailer, type Mailer } from './mailer.ts';
 import { CloudflareAccess, type AccessConfig } from './admin/access.ts';
+import type { Envelope } from './admin/db.ts';
 import { createAdmin } from './admin/index.ts';
 import { renderCertificate } from './pdf.ts';
+import { ProfileRegistry, signerVisible as profileVisible } from './profiles.ts';
 import { AdminStore } from './admin/db.ts';
 import { SqliteStore } from './store.ts';
 import { parseSignRequest, ValidationError } from './validate.ts';
@@ -58,6 +62,8 @@ export interface SealformConfig {
    * Pick a path that is not linked anywhere; it is not a secret, only less noise from scanners.
    */
   adminPath?: string;
+  /** Folder of jurisdiction profile JSON files. Defaults to the profiles shipped with sealform. */
+  profilesDir?: string;
   /**
    * Public Turnstile site key for the dashboard sign-in page. Required when the dashboard is on and
    * `botCheck` is a TurnstileCheck, so the dashboard is never left unprotected by accident. Uses the
@@ -125,6 +131,7 @@ export async function createSealform(config: SealformConfig): Promise<Sealform> 
   if (activeKey.retiredAt) throw new Error(`Sealing key ${sealingKey.kid} is retired`);
 
   const documents = await DocumentRegistry.load(config.documentsDir, checks);
+  const profiles = await ProfileRegistry.load(config.profilesDir);
   const store = await SqliteStore.open(config.dataDir);
   const keysUrl = `${origin}/.well-known/sealform-keys.json`;
   const admin = config.adminPath
@@ -137,6 +144,10 @@ export async function createSealform(config: SealformConfig): Promise<Sealform> 
         sealingKey,
         keySet,
         checks,
+        profiles,
+        signBase: base,
+        mailer,
+        operator: config.operator,
         botCheck,
         turnstileSiteKey: config.adminTurnstileSiteKey,
         access,
@@ -145,9 +156,40 @@ export async function createSealform(config: SealformConfig): Promise<Sealform> 
       })
     : undefined;
 
+  /** The fields a private link fixes for the signer: name and email, matched by role. */
+  function envelopePrefill(doc: LoadedDocument, envelope: Envelope): Record<string, string> {
+    const out: Record<string, string> = {};
+    for (const field of doc.manifest.fields) {
+      if (field.role === 'signerName') out[field.name] = envelope.signerName;
+      if (field.role === 'receiptEmail') out[field.name] = envelope.signerEmail;
+    }
+    return out;
+  }
+
+  /** A link that can still be used to sign, or the reason it cannot. */
+  function openEnvelope(token: string): Envelope {
+    const found = admin && /^[A-Za-z0-9_-]{43}$/.test(token) ? admin.db.envelopeByTokenHash(hashToken(token)) : undefined;
+    if (!found) throw new HttpError(404, 'This signing link is not valid.');
+    if (found.status === 'revoked') throw new HttpError(410, 'This signing link was cancelled. Ask the sender for a new one.');
+    if (found.status === 'awaiting-countersignature' || found.status === 'complete') throw new HttpError(409, 'This agreement has already been signed.');
+    if (found.expiresAt < now().toISOString()) throw new HttpError(410, 'This signing link has expired. Ask the sender for a new one.');
+    return found;
+  }
+
+  async function getEnvelope(req: IncomingMessage, res: ServerResponse, token: string, url: URL): Promise<void> {
+    const envelope = openEnvelope(token);
+    const doc = documents.get(envelope.documentId, envelope.documentVersion);
+    if (!doc || documents.status(doc) !== 'published') throw new HttpError(410, 'This agreement is no longer open for signing. Ask the sender.');
+    return serveDocument(req, res, doc, url, envelope);
+  }
+
   async function getDocument(req: IncomingMessage, res: ServerResponse, id: string, url: URL): Promise<void> {
     const doc = documents.current(id);
     if (!doc || !doc.manifest.public) throw new HttpError(404, 'No such document');
+    return serveDocument(req, res, doc, url);
+  }
+
+  async function serveDocument(req: IncomingMessage, res: ServerResponse, doc: LoadedDocument, url: URL, envelope?: Envelope): Promise<void> {
     const lang = pickLanguage(doc, url.searchParams.get('lang'), header(req, 'accept-language'));
     const text = doc.texts.get(lang)!;
     const disclosure = disclosureOf(doc);
@@ -163,18 +205,32 @@ export async function createSealform(config: SealformConfig): Promise<Sealform> 
       consents: doc.manifest.consents,
       requiredChecks: doc.manifest.requiredChecks,
       session: { id: session.id, expiresAt: session.expiresAt },
-      botCheck: botCheck.name,
+      botCheck: envelope ? 'none' : botCheck.name,
+      ...(envelope ? { prefill: envelopePrefill(doc, envelope), envelope: { label: envelope.label, expiresAt: envelope.expiresAt } } : {}),
     });
   }
 
   async function sign(req: IncomingMessage, res: ServerResponse, ip: string): Promise<void> {
     const body = (await readJson(req, MAX_BODY)) as Record<string, unknown>;
-    const doc = documents.get(String(body?.documentId ?? ''), String(body?.version ?? ''));
-    if (!doc || documents.status(doc) !== 'published' || !doc.manifest.public) {
+    // A private link names its own document, and the link itself is the secret; there is no bot check.
+    const envelope = typeof body?.envelopeToken === 'string' ? openEnvelope(body.envelopeToken) : undefined;
+    const doc = envelope ? documents.get(envelope.documentId, envelope.documentVersion) : documents.get(String(body?.documentId ?? ''), String(body?.version ?? ''));
+    if (!doc || documents.status(doc) !== 'published' || (!envelope && !doc.manifest.public) || (envelope && (body.documentId !== doc.manifest.id || body.version !== doc.manifest.version))) {
       throw new HttpError(409, 'This document version is no longer open for signing. Reload the page to get the current version.');
     }
-    const request = parseSignRequest(body, doc.manifest);
-    if (!(await botCheck.verify(request.botToken, ip))) throw new HttpError(403, 'The bot check failed. Please try again.');
+    // The signer's country picks the jurisdiction profile, which can add required fields.
+    const countrySpec = doc.manifest.fields.find((field) => field.role === 'country' || field.type === 'country');
+    const rawCountry = countrySpec ? ((body.fields ?? {}) as Record<string, unknown>)[countrySpec.name] : undefined;
+    const jurisdiction = typeof rawCountry === 'string' && isCountryCode(rawCountry) ? profiles.resolve(rawCountry) : undefined;
+    const effective = jurisdiction
+      ? { ...doc.manifest, fields: [...doc.manifest.fields, ...jurisdiction.loaded.profile.requiredFields.filter((extra) => !doc.manifest.fields.some((own) => own.name === extra.name)).map((extra) => ({ ...extra }))] }
+      : doc.manifest;
+    const request = parseSignRequest(body, effective);
+    if (!envelope && !(await botCheck.verify(request.botToken, ip))) throw new HttpError(403, 'The bot check failed. Please try again.');
+    if (envelope) {
+      const fixed = Object.entries(envelopePrefill(doc, envelope)).filter(([name, value]) => request.fields[name] !== value);
+      if (fixed.length) throw new ValidationError(Object.fromEntries(fixed.map(([name]) => [`fields.${name}`, 'is fixed by this link and cannot be changed'])));
+    }
 
     const session = store.getSession(request.sessionId);
     const receivedAt = now();
@@ -183,11 +239,20 @@ export async function createSealform(config: SealformConfig): Promise<Sealform> 
     }
     if (session.expiresAt < receivedAt.toISOString()) throw new HttpError(409, 'This signing session expired. Reload the page and sign again.');
     if (!store.useSession(session.id, receivedAt.toISOString())) throw new HttpError(409, 'This signing session was already used.');
+    if (envelope && !admin!.db.claimEnvelope(envelope.id, receivedAt.toISOString(), new Date(receivedAt.getTime() - 5 * 60_000).toISOString())) {
+      store.releaseSession(session.id);
+      throw new HttpError(409, 'This signing link is already being used.');
+    }
 
     try {
       const text = doc.texts.get(request.lang);
       if (!text || text.sha256 !== request.textSha256) throw new HttpError(409, 'The text you saw does not match the published version. Reload the page.');
       if (doc.manifestSha256 !== request.manifestSha256) throw new HttpError(409, 'The form you saw does not match the published version. Reload the page.');
+      if (jurisdiction) {
+        const needs = jurisdiction.loaded.profile.formRequirements.find((r) => r.category === doc.manifest.category);
+        if (needs) throw new HttpError(422, `This kind of document cannot be signed with a simple electronic signature in ${jurisdiction.loaded.profile.name}. ${needs.note}`);
+        if (request.profileSha256 !== jurisdiction.loaded.sha256) throw new HttpError(409, 'The notices shown for your country are out of date. Reload the page.');
+      }
       const disclosure = disclosureOf(doc);
       const disclosureText = disclosure ? (disclosure.texts.get(request.lang) ?? disclosure.texts.get(disclosure.manifest.governingLang)!) : undefined;
 
@@ -214,6 +279,8 @@ export async function createSealform(config: SealformConfig): Promise<Sealform> 
               disclosure: disclosure && disclosureText
                 ? { id: disclosure.manifest.id, version: disclosure.manifest.version, lang: disclosureText.lang, sha256: disclosureText.sha256, manifestSha256: disclosure.manifestSha256 }
                 : { id: 'none', version: 'none', lang: request.lang, sha256: '0'.repeat(64) },
+              ...(envelope ? { envelope: { id: envelope.id, role: 'signer', order: 1 } } : {}),
+              ...(jurisdiction ? { jurisdiction: { profile: jurisdiction.loaded.profile.id, version: jurisdiction.loaded.profile.version, sha256: jurisdiction.loaded.sha256, fallback: jurisdiction.fallback } } : {}),
               fields: request.fields,
               consent: request.consents,
               signature: { typedName: request.signature.typedName, vector: request.signature.vector, pngSha256 },
@@ -240,7 +307,7 @@ export async function createSealform(config: SealformConfig): Promise<Sealform> 
 
       const pdf = await renderCertificate({
         record,
-        manifest: doc.manifest,
+        manifest: effective,
         documentText: text.text,
         ...(disclosureText ? { disclosureText: disclosureText.text } : {}),
         png: request.signature.png,
@@ -250,6 +317,7 @@ export async function createSealform(config: SealformConfig): Promise<Sealform> 
       await writeFile(join(store.recordsDir, `${id}.pdf`), pdf, { mode: 0o600 });
       store.setPdfHash(id, await sha256Hex(new Uint8Array(pdf)));
 
+      if (envelope) admin!.db.finishEnvelope(envelope.id, record.id, record.hash, receivedAt.toISOString(), envelope.counterRequired);
       const receiptBase = `${origin}${base}/api/receipts/${receiptToken}`;
       if (receiptTo) {
         mailer
@@ -268,6 +336,7 @@ export async function createSealform(config: SealformConfig): Promise<Sealform> 
         keysUrl,
       });
     } catch (error) {
+      if (envelope) admin!.db.releaseEnvelope(envelope.id);
       store.releaseSession(session.id);
       throw error;
     }
@@ -299,6 +368,18 @@ export async function createSealform(config: SealformConfig): Promise<Sealform> 
       sendJson(res, 200, keySet, { 'cache-control': 'public, max-age=3600', 'access-control-allow-origin': '*' });
       return true;
     }
+    const contract = new RegExp(`^${base.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/c/([A-Za-z0-9_-]{43})$`).exec(path);
+    if (admin && req.method === 'GET' && contract) {
+      limit(readLimiter, `read:${ip}`);
+      sendBytes(res, 200, 'text/html; charset=utf-8', Buffer.from(contractPage(base, contract[1]!)), CONTRACT_HEADERS);
+      return true;
+    }
+    if (admin && req.method === 'GET' && path.startsWith(`${base}/assets/`)) {
+      const asset = await contractAsset(path.slice(`${base}/assets/`.length));
+      if (!asset) throw new HttpError(404, 'Not found');
+      sendBytes(res, 200, asset.type, asset.body, { ...CONTRACT_HEADERS, 'cache-control': 'public, max-age=300' });
+      return true;
+    }
     if (!path.startsWith(`${base}/api/`)) return false;
 
     const requestOrigin = header(req, 'origin');
@@ -316,11 +397,20 @@ export async function createSealform(config: SealformConfig): Promise<Sealform> 
 
     const rest = path.slice(`${base}/api/`.length);
     const docMatch = /^documents\/([A-Za-z0-9._-]{1,64})$/.exec(rest);
+    const envelopeMatch = /^envelopes\/([A-Za-z0-9_-]{43})$/.exec(rest);
+    const profileMatch = /^profile\/([A-Za-z-]{2,5})$/.exec(rest);
     const receiptMatch = /^receipts\/([A-Za-z0-9_-]+)\.(pdf|json)$/.exec(rest);
 
     if (docMatch && req.method === 'GET') {
       limit(readLimiter, `read:${ip}`);
       await getDocument(req, res, docMatch[1]!, url);
+    } else if (envelopeMatch && req.method === 'GET') {
+      limit(readLimiter, `read:${ip}`);
+      await getEnvelope(req, res, envelopeMatch[1]!, url);
+    } else if (profileMatch && req.method === 'GET') {
+      limit(readLimiter, `read:${ip}`);
+      const { loaded, fallback } = profiles.resolve(profileMatch[1]!.toUpperCase());
+      sendJson(res, 200, { profile: profileVisible(loaded.profile), sha256: loaded.sha256, fallback });
     } else if (rest === 'sign' && req.method === 'POST') {
       limit(signLimiter, `sign:${ip}`);
       await sign(req, res, ip);
@@ -359,6 +449,36 @@ export async function createSealform(config: SealformConfig): Promise<Sealform> 
   };
 
   return { handler, store, documents, admin: admin?.db, close: () => store.close() };
+}
+
+const CONTRACT_HEADERS = {
+  'content-security-policy': "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; form-action 'none'; frame-ancestors 'none'; base-uri 'none'",
+  'referrer-policy': 'no-referrer',
+  'x-robots-tag': 'noindex, nofollow',
+};
+
+/** The hosted signing page for a private link. No inline script or style, so the CSP can forbid both. */
+function contractPage(base: string, token: string): string {
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex, nofollow"><link rel="icon" href="data:,"><title>Sign agreement</title><link rel="stylesheet" href="${base}/assets/sealform.css"><link rel="stylesheet" href="${base}/assets/contract.css"></head><body><main><div id="sign" data-endpoint="${base}" data-token="${token}"></div><noscript><p>Signing needs JavaScript.</p></noscript></main><script type="module" src="${base}/assets/contract.js"></script></body></html>`;
+}
+
+const CONTRACT_JS = "import { mountSealform } from './sealform.js';\nconst el = document.getElementById('sign');\nmountSealform(el, { endpoint: el.dataset.endpoint, envelopeToken: el.dataset.token });\n";
+const CONTRACT_CSS = 'body{margin:0;background:#fbfaf7;font:16px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}main{max-width:46rem;margin:0 auto;padding:2rem 1rem}';
+
+async function contractAsset(name: string): Promise<{ type: string; body: Uint8Array } | undefined> {
+  if (name === 'contract.js') return { type: 'text/javascript; charset=utf-8', body: Buffer.from(CONTRACT_JS) };
+  if (name === 'contract.css') return { type: 'text/css; charset=utf-8', body: Buffer.from(CONTRACT_CSS) };
+  const files: Record<string, string> = { 'sealform.js': 'text/javascript; charset=utf-8', 'sealform.css': 'text/css; charset=utf-8' };
+  if (!files[name]) return undefined;
+  // Built package: dist/server -> dist/client. Running from source: src/server -> dist/client.
+  for (const relative of ['../client/', '../../dist/client/']) {
+    try {
+      return { type: files[name]!, body: await readFile(fileURLToPath(new URL(`${relative}${name}`, import.meta.url))) };
+    } catch {
+      // try the next layout
+    }
+  }
+  return undefined;
 }
 
 function limit(limiter: RateLimiter, key: string): void {
@@ -431,5 +551,6 @@ export { DocumentRegistry, type DocumentManifest, type FieldSpec, type ConsentSp
 export { NoBotCheck, RateLimiter, TurnstileCheck, type BotCheck } from './guards.ts';
 export { OutboxMailer, toMime, type Mailer, type MailMessage } from './mailer.ts';
 export { SqliteStore, type RecordSummary } from './store.ts';
+export { ProfileRegistry, profileHealth, type Profile, type LoadedProfile } from './profiles.ts';
 export { ValidationError } from './validate.ts';
 export { isCountryCode } from '../core/index.ts';

@@ -8,8 +8,9 @@ Built for small operators who need waivers, tester agreements and contracts with
 bill: one Node.js app, no external database, no vendor holding your records.
 
 > **Status: early.** The core (hashing, sealing, verification), the command line, the signing
-> server, the embeddable form and the admin dashboard are done and tested. Private contract links,
-> jurisdiction profiles and site controls are next. See the [roadmap](#roadmap).
+> server, the embeddable form, the admin dashboard, jurisdiction profiles and private contract links
+> are done and tested. Site controls (hiding pages, parking mode) are next. See the
+> [roadmap](#roadmap).
 
 ## How a signature becomes evidence
 
@@ -132,6 +133,41 @@ replaced through the `labels` option for translations.
 
 Try it locally with `npm run build && npm run demo`, then open http://localhost:5180.
 
+### Jurisdiction profiles
+
+The signer's country picks a profile from `profiles/`: the e-signature law that applies, the age of
+majority, notices to show before signing, extra fields the country needs, and which kinds of document
+(wills, property transfers, suretyships and so on) the law excludes from a simple electronic signature.
+The form fetches the profile when a country is chosen, and the server refuses to seal unless the
+signer was shown that exact profile: its hash is stored in the record, so the evidence shows which
+rules and notices applied. A document whose `category` a country excludes is refused there with the
+reason. Countries without a profile get a cautious default, and the record says so.
+
+Profiles ship for the US (and California), UK, Germany, Latvia, Argentina, Japan, South Africa, the
+Netherlands and Belgium. They are plain JSON, so adding a country is a file:
+`id`, `eSignLaw`, `ageOfMajority`, `formRequirements`, `requiredFields`, `notices`, `sources` and so on
+(see `src/server/profiles.ts` for the checked shape, and point `profilesDir` at your own folder).
+
+> **Read this before relying on a profile.** The profiles were written from public sources and general
+> knowledge, with every source listed, but they have **not been reviewed by a lawyer** and were not
+> re-checked against the live sources when written. `reviewedBy` is `null` until someone sets it, and the
+> dashboard flags unreviewed profiles and any older than a year. They are evidence settings, not
+> legal advice.
+
+### Private contract links
+
+For agreements with partners and other people, a document with `"public": false` is never listed. An
+owner or admin makes a link for one named signer from the dashboard's **Contracts** page: choose the
+document, the signer's name and email (fixed on their form), an expiry and whether you will
+countersign. The link is shown once; only a hash of it is stored. It works once, can be cancelled, and
+its hosted signing page needs no site of yours. Entering the signer's country checks the document
+against that country's profile first; if the law there excludes this kind of document, creating the link
+needs a stated reason, which is kept in the audit log.
+
+Countersigning is a sealed entry in the audit log naming the account, the signer's record hash and a
+final hash of the whole agreement, and it emails the signer a confirmation. It is a decision recorded
+under your account, not a drawn signature.
+
 ### The admin dashboard
 
 Set `adminPath` to turn it on, and pick a path that nothing links to:
@@ -175,6 +211,7 @@ npx sealform admin create --data /home/you/sealform-data   --key /home/you/keys/
 | Overview | everyone | Counts by status, what is open for signing, the chain head, checks not configured |
 | Submissions | everyone | Search and filter, per-record view with the signature, answers and all captured evidence, per-record verification, PDF and record downloads, application status |
 | Documents | owner, admin | Versions, languages, hashes, publish and close (publishing closes the previous version) |
+| Contracts | owner, admin | Private signing links: create, cancel, countersign, and the country check |
 | Accounts | owner | Create accounts with a temporary password, change roles, disable, reset |
 | Sign-ins | everyone (owners see all) | Every attempt with IP and browser, successful or not |
 | Audit log | owner | Every dashboard change, hash-chained and sealed like records, exportable and checkable with `sealform verify-chain` |
@@ -210,8 +247,8 @@ link, hash and seal, so the chain still verifies while the personal data is gone
 | Retention, legal holds and tombstoning from the CLI | planned |
 | Embeddable signing form (`signature_pad`), themeable, reduced-motion aware | done |
 | Admin dashboard: accounts, two-factor sign-in, sign-in history, sealed audit log, documents, submissions | done |
-| Jurisdiction profiles: the signer's country sets the law cited, age rules, notices, required fields and checks, all sourced and dated | planned |
-| Private signing links for contracts, with countersignature | planned |
+| Jurisdiction profiles: nine countries plus a default, notices, required fields, excluded document types, hash in the record (not lawyer-reviewed) | done |
+| Private signing links for contracts, with countersignature | done |
 | Site controls: hide pages, parking mode | planned |
 | Optional checks: email one-time code, SMS, passkeys, ID verification, qualified signatures, RFC 3161 timestamps, signed PDFs | designed, off by default |
 

@@ -103,6 +103,30 @@ CREATE TABLE IF NOT EXISTS audit (
   hash TEXT NOT NULL,
   entry_json TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS envelopes (
+  id TEXT PRIMARY KEY,
+  token_hash TEXT NOT NULL UNIQUE,
+  document_id TEXT NOT NULL,
+  document_version TEXT NOT NULL,
+  label TEXT NOT NULL,
+  signer_name TEXT NOT NULL,
+  signer_email TEXT NOT NULL,
+  signer_country TEXT,
+  counter_required INTEGER NOT NULL,
+  status TEXT NOT NULL,
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  claimed_at TEXT,
+  record_id TEXT,
+  record_hash TEXT,
+  signed_at TEXT,
+  countersigned_by TEXT,
+  countersigned_at TEXT,
+  final_hash TEXT,
+  revoked_at TEXT,
+  override_reason TEXT
+);
 CREATE TABLE IF NOT EXISTS document_status (
   document_id TEXT NOT NULL,
   version TEXT NOT NULL,
@@ -284,6 +308,62 @@ export class AdminStore {
     return (rows as { entry_json: string }[]).map((row) => JSON.parse(row.entry_json) as AuditEntry);
   }
 
+  // Envelopes (private contract links) -----------------------------------------------------------
+
+  createEnvelope(input: { tokenHash: string; documentId: string; documentVersion: string; label: string; signerName: string; signerEmail: string; signerCountry: string | null; counterRequired: boolean; createdBy: string; createdAt: string; expiresAt: string; overrideReason: string | null }): Envelope {
+    const id = prefixedId('env');
+    this.db
+      .prepare(
+        `INSERT INTO envelopes (id, token_hash, document_id, document_version, label, signer_name, signer_email, signer_country, counter_required, status, created_by, created_at, expires_at, override_reason)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?)`,
+      )
+      .run(id, input.tokenHash, input.documentId, input.documentVersion, input.label, input.signerName, input.signerEmail, input.signerCountry, input.counterRequired ? 1 : 0, input.createdBy, input.createdAt, input.expiresAt, input.overrideReason);
+    return this.envelope(id)!;
+  }
+
+  envelope(id: string): Envelope | undefined {
+    return toEnvelope(this.db.prepare('SELECT * FROM envelopes WHERE id = ?').get(id));
+  }
+
+  envelopeByTokenHash(tokenHash: string): Envelope | undefined {
+    return toEnvelope(this.db.prepare('SELECT * FROM envelopes WHERE token_hash = ?').get(tokenHash));
+  }
+
+  envelopes(): Envelope[] {
+    return (this.db.prepare('SELECT * FROM envelopes ORDER BY created_at DESC').all() as unknown[]).map((row) => toEnvelope(row)!);
+  }
+
+  /** Takes the link for one signing attempt. A claim older than five minutes is treated as abandoned. */
+  claimEnvelope(id: string, now: string, abandonedBefore: string): boolean {
+    return (
+      Number(
+        this.db
+          .prepare("UPDATE envelopes SET status = 'signing', claimed_at = ? WHERE id = ? AND expires_at > ? AND (status = 'open' OR (status = 'signing' AND claimed_at < ?))")
+          .run(now, id, now, abandonedBefore).changes,
+      ) === 1
+    );
+  }
+
+  releaseEnvelope(id: string): void {
+    this.db.prepare("UPDATE envelopes SET status = 'open', claimed_at = NULL WHERE id = ? AND status = 'signing'").run(id);
+  }
+
+  finishEnvelope(id: string, recordId: string, recordHash: string, at: string, counterRequired: boolean): void {
+    this.db
+      .prepare('UPDATE envelopes SET status = ?, record_id = ?, record_hash = ?, signed_at = ?, final_hash = ? WHERE id = ?')
+      .run(counterRequired ? 'awaiting-countersignature' : 'complete', recordId, recordHash, at, counterRequired ? null : recordHash, id);
+  }
+
+  revokeEnvelope(id: string, at: string): boolean {
+    return Number(this.db.prepare("UPDATE envelopes SET status = 'revoked', revoked_at = ? WHERE id = ? AND status IN ('open', 'signing')").run(at, id).changes) === 1;
+  }
+
+  countersignEnvelope(id: string, by: string, at: string, finalHash: string): boolean {
+    return (
+      Number(this.db.prepare("UPDATE envelopes SET status = 'complete', countersigned_by = ?, countersigned_at = ?, final_hash = ? WHERE id = ? AND status = 'awaiting-countersignature'").run(by, at, finalHash, id).changes) === 1
+    );
+  }
+
   // Document status ------------------------------------------------------------------------------
 
   documentStatuses(): { documentId: string; version: string; status: DocumentStatus }[] {
@@ -342,6 +422,59 @@ export class AdminStore {
     const rows = this.db.prepare('SELECT application_status AS s, COUNT(*) AS n FROM records GROUP BY application_status').all() as { s: string; n: number }[];
     return Object.fromEntries(rows.map((row) => [row.s, row.n]));
   }
+}
+
+export type EnvelopeStatus = 'open' | 'signing' | 'awaiting-countersignature' | 'complete' | 'revoked';
+
+export interface Envelope {
+  id: string;
+  documentId: string;
+  documentVersion: string;
+  label: string;
+  signerName: string;
+  signerEmail: string;
+  signerCountry: string | null;
+  counterRequired: boolean;
+  status: EnvelopeStatus;
+  createdBy: string;
+  createdAt: string;
+  expiresAt: string;
+  recordId: string | null;
+  recordHash: string | null;
+  signedAt: string | null;
+  countersignedBy: string | null;
+  countersignedAt: string | null;
+  finalHash: string | null;
+  revokedAt: string | null;
+  overrideReason: string | null;
+}
+
+function toEnvelope(row: unknown): Envelope | undefined {
+  if (!row) return undefined;
+  const r = row as Record<string, unknown>;
+  const s = (key: string) => (r[key] as string | null) ?? null;
+  return {
+    id: r.id as string,
+    documentId: r.document_id as string,
+    documentVersion: r.document_version as string,
+    label: r.label as string,
+    signerName: r.signer_name as string,
+    signerEmail: r.signer_email as string,
+    signerCountry: s('signer_country'),
+    counterRequired: r.counter_required === 1,
+    status: r.status as EnvelopeStatus,
+    createdBy: r.created_by as string,
+    createdAt: r.created_at as string,
+    expiresAt: r.expires_at as string,
+    recordId: s('record_id'),
+    recordHash: s('record_hash'),
+    signedAt: s('signed_at'),
+    countersignedBy: s('countersigned_by'),
+    countersignedAt: s('countersigned_at'),
+    finalHash: s('final_hash'),
+    revokedAt: s('revoked_at'),
+    overrideReason: s('override_reason'),
+  };
 }
 
 function toAccount(row: unknown): Account | undefined {

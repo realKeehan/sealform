@@ -1,0 +1,45 @@
+{
+  "id": "BE",
+  "version": 1,
+  "name": "Belgium",
+  "eSignLaw": {
+    "name": "eIDAS Regulation and the Belgian Civil Code (Book 8, evidence)",
+    "citation": "Regulation (EU) 910/2014 art. 25; Civil Code Book 8"
+  },
+  "level": "ses",
+  "levelNote": "An electronic signature cannot be denied legal effect only because it is electronic; its evidential value depends on the method used.",
+  "ageOfMajority": 18,
+  "formRequirements": [
+    {
+      "category": "will",
+      "requires": "wet-ink",
+      "note": "A will must be handwritten or made before a notary."
+    },
+    {
+      "category": "real-estate",
+      "requires": "notarization",
+      "note": "Property transfers need a notarial deed."
+    }
+  ],
+  "requiredFields": [],
+  "notices": [
+    "Electronic signature law that applies: eIDAS Regulation and the Belgian Civil Code (Book 8, evidence). An electronic signature cannot be denied legal effect only because it is electronic; its evidential value depends on the method used.",
+    "You must be at least 18 years old to sign this agreement.",
+    "If you are unsure whether this applies to you, ask for a paper alternative before signing."
+  ],
+  "privacyRegime": "gdpr",
+  "limitationPeriod": "P10Y",
+  "limitationNote": "Verify against the Civil Code (Book 5 on obligations) before relying on this period.",
+  "drafted": "2026-10-30",
+  "reviewedBy": null,
+  "sources": [
+    {
+      "title": "eIDAS Regulation (EU) 910/2014, art. 25 (EUR-Lex)",
+      "url": "https://eur-lex.europa.eu/eli/reg/2014/910/oj"
+    },
+    {
+      "title": "Belgian official gazette and legislation (search: Civil Code Book 8)",
+      "url": "https://www.ejustice.just.fgov.be/"
+    }
+  ]
+}

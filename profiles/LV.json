@@ -1,0 +1,51 @@
+{
+  "id": "LV",
+  "version": 1,
+  "name": "Latvia",
+  "eSignLaw": {
+    "name": "eIDAS Regulation and the Latvian Electronic Documents Law",
+    "citation": "Regulation (EU) 910/2014 art. 25; Latvian Electronic Documents Law"
+  },
+  "level": "ses",
+  "levelNote": "An electronic signature cannot be denied legal effect only because it is electronic (eIDAS art. 25(1)).",
+  "ageOfMajority": 18,
+  "formRequirements": [
+    {
+      "category": "will",
+      "requires": "wet-ink",
+      "note": "Wills need a handwritten signature or a notary."
+    },
+    {
+      "category": "real-estate",
+      "requires": "notarization",
+      "note": "Property transactions need a notarial deed for registration."
+    },
+    {
+      "category": "family",
+      "requires": "wet-ink",
+      "note": "Family-law documents are commonly excluded."
+    }
+  ],
+  "requiredFields": [],
+  "notices": [
+    "Electronic signature law that applies: eIDAS Regulation and the Latvian Electronic Documents Law. An electronic signature cannot be denied legal effect only because it is electronic (eIDAS art. 25(1)).",
+    "You must be at least 18 years old to sign this agreement.",
+    "A Latvian translation of this agreement may be available on request.",
+    "If you are unsure whether this applies to you, ask for a paper alternative before signing."
+  ],
+  "privacyRegime": "gdpr",
+  "limitationPeriod": "P10Y",
+  "limitationNote": "Verify against the Latvian Civil Law before relying on this period.",
+  "drafted": "2026-10-30",
+  "reviewedBy": null,
+  "sources": [
+    {
+      "title": "eIDAS Regulation (EU) 910/2014, art. 25 (EUR-Lex)",
+      "url": "https://eur-lex.europa.eu/eli/reg/2014/910/oj"
+    },
+    {
+      "title": "Latvian legislation portal (search: Electronic Documents Law)",
+      "url": "https://likumi.lv/"
+    }
+  ]
+}

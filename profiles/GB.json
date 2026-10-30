@@ -1,0 +1,45 @@
+{
+  "id": "GB",
+  "version": 1,
+  "name": "United Kingdom",
+  "eSignLaw": {
+    "name": "Electronic Communications Act 2000 and UK eIDAS",
+    "citation": "ECA 2000 s.7; Electronic Identification and Trust Services for Electronic Transactions Regulations 2016"
+  },
+  "level": "ses",
+  "levelNote": "Electronic signatures are admissible in evidence and can satisfy a signature requirement for most contracts.",
+  "ageOfMajority": 18,
+  "formRequirements": [
+    {
+      "category": "will",
+      "requires": "wet-ink",
+      "note": "Wills need a witnessed handwritten signature under the Wills Act 1837."
+    },
+    {
+      "category": "deed",
+      "requires": "witness",
+      "note": "A deed needs a witness who is physically present when it is signed."
+    }
+  ],
+  "requiredFields": [],
+  "notices": [
+    "Electronic signature law that applies: Electronic Communications Act 2000 and UK eIDAS. Electronic signatures are admissible in evidence and can satisfy a signature requirement for most contracts.",
+    "You must be at least 18 years old to sign this agreement.",
+    "If you are unsure whether this applies to you, ask for a paper alternative before signing."
+  ],
+  "privacyRegime": "uk-gdpr",
+  "limitationPeriod": "P6Y",
+  "limitationNote": "Simple contracts: six years; deeds: twelve (Limitation Act 1980).",
+  "drafted": "2026-10-30",
+  "reviewedBy": null,
+  "sources": [
+    {
+      "title": "Electronic Communications Act 2000, s.7 (legislation.gov.uk)",
+      "url": "https://www.legislation.gov.uk/ukpga/2000/7/section/7"
+    },
+    {
+      "title": "Law Commission: electronic execution of documents",
+      "url": "https://www.lawcom.gov.uk/project/electronic-execution-of-documents/"
+    }
+  ]
+}

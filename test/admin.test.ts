@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { crc32, deflateSync } from 'node:zlib';
 import { after, before, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { generateKeyPair, KEYSET_FORMAT, toBase64Url, utf8, verifyChain, type KeySet } from '../src/core/index.ts';
+import { generateKeyPair, KEYSET_FORMAT, toBase64Url, utf8, verifyChain, type KeySet, type SealformRecord } from '../src/core/index.ts';
 import { CloudflareAccess, createSealform, hashPassword } from '../src/server/index.ts';
 import { base32Encode, hotp, newTotpSecret, verifyTotp } from '../src/server/admin/auth.ts';
 
@@ -340,6 +340,7 @@ async function sign(app: App, name: string, email: string) {
       lang: open.document.lang,
       textSha256: open.document.sha256,
       manifestSha256: open.document.manifestSha256,
+      profileSha256: ((await (await fetch(`${app.url}/sealform/api/profile/DE`)).json()) as { sha256: string }).sha256,
       fields: { legalName: name, email, country: 'DE', adult: true },
       consents: { esign: true, acceptVersion: true },
       signature: { typedName: name, vector: [{ points: Array.from({ length: 20 }, (_, i) => ({ x: i * 5, y: 20 + Math.sin(i / 3) * 10, time: i * 20 })) }], png: png() },
@@ -769,6 +770,181 @@ test('with Access on, the public signing API and key set stay open', async () =>
     assert.equal((await fetch(`${app.url}/sealform/api/documents/example-agreement`)).status, 200);
     assert.equal((await fetch(`${app.url}/.well-known/sealform-keys.json`)).status, 200);
     assert.equal((await fetch(`${app.url}${BASE}/`, { redirect: 'manual' })).status, 403);
+  } finally {
+    await app.stop();
+  }
+});
+
+
+// Private contract links ----------------------------------------------------------------------------
+
+function stroke() {
+  return Array.from({ length: 20 }, (_, i) => ({ x: i * 5, y: 20 + Math.sin(i / 3) * 10, time: i * 20 }));
+}
+
+async function createLink(owner: Browser, fields: Record<string, string> = {}) {
+  const csrf = await owner.csrf('/contracts');
+  const response = await owner.post('/contracts', { csrf, document: 'partner-contract@PARTNER-1', label: 'Acme services', name: 'Pat Partner', email: 'pat@example.org', days: '14', counter: '1', country: 'DE', ...fields });
+  const token = /\/sealform\/c\/([A-Za-z0-9_-]{43})</.exec(response.text)?.[1];
+  return { response, token, csrf };
+}
+
+async function signLink(app: App, token: string, overrides: Record<string, unknown> = {}, country = 'DE') {
+  type Opened = { document?: { id: string; version: string; lang: string; sha256: string; manifestSha256: string }; session?: { id: string } };
+  const fetched = (await (await fetch(`${app.url}/sealform/api/envelopes/${token}`)).json()) as Opened;
+  // A used, cancelled or expired link has nothing to open; still post to prove signing is refused too.
+  const open = {
+    document: fetched.document ?? { id: 'partner-contract', version: 'PARTNER-1', lang: 'en', sha256: '0'.repeat(64), manifestSha256: '0'.repeat(64) },
+    session: fetched.session ?? { id: 'x'.repeat(32) },
+  };
+  const profile = (await (await fetch(`${app.url}/sealform/api/profile/${country}`)).json()) as { sha256: string };
+  return fetch(`${app.url}/sealform/api/sign`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'user-agent': 'partner-browser' },
+    body: JSON.stringify({
+      envelopeToken: token,
+      sessionId: open.session.id,
+      documentId: open.document.id,
+      version: open.document.version,
+      lang: open.document.lang,
+      textSha256: open.document.sha256,
+      manifestSha256: open.document.manifestSha256,
+      profileSha256: profile.sha256,
+      fields: { legalName: 'Pat Partner', email: 'pat@example.org', country },
+      consents: { esign: true, acceptVersion: true },
+      signature: { typedName: 'Pat Partner', vector: [{ points: stroke() }], png: png() },
+      client: {},
+      ...overrides,
+    }),
+  });
+}
+
+test('a private link is created once, signs exactly once, and is countersigned from the dashboard', async () => {
+  const app = await start('contracts');
+  try {
+    const owner = await ownerSession(app);
+    const { response, token, csrf } = await createLink(owner);
+    assert.equal(response.status, 200);
+    assert.ok(token, 'the link is shown on creation');
+    const env = app.admin.envelopes()[0]!;
+    assert.equal(env.status, 'open');
+    assert.equal(JSON.stringify(env).includes(token), false, 'only a hash of the token is stored');
+
+    // The hosted page and its assets work under a strict policy; the document is not public.
+    const page = await fetch(`${app.url}/sealform/c/${token}`);
+    assert.equal(page.status, 200);
+    assert.match(page.headers.get('content-security-policy')!, /script-src 'self'/);
+    assert.equal(page.headers.get('referrer-policy'), 'no-referrer');
+    assert.match(await page.text(), new RegExp(`data-token="${token}"`));
+    assert.equal((await fetch(`${app.url}/sealform/assets/contract.js`)).status, 200);
+    assert.equal((await fetch(`${app.url}/sealform/api/documents/partner-contract`)).status, 404);
+    assert.equal((await fetch(`${app.url}/sealform/c/short`)).status, 404);
+    assert.equal((await fetch(`${app.url}/sealform/api/envelopes/${'A'.repeat(43)}`)).status, 404);
+
+    const opened = (await (await fetch(`${app.url}/sealform/api/envelopes/${token}`)).json()) as { prefill: Record<string, string>; botCheck: string; envelope: { label: string } };
+    assert.deepEqual(opened.prefill, { legalName: 'Pat Partner', email: 'pat@example.org' });
+    assert.equal(opened.botCheck, 'none');
+
+    // Name and email are fixed by the link.
+    const swapped = await signLink(app, token!, { fields: { legalName: 'Someone Else', email: 'pat@example.org', country: 'DE' }, signature: { typedName: 'Someone Else', vector: [{ points: stroke() }], png: png() } });
+    assert.equal(swapped.status, 422);
+    assert.ok((((await swapped.json()) as { fields: Record<string, string> }).fields)['fields.legalName']);
+    assert.equal(app.admin.envelope(env.id)!.status, 'open', 'a refused attempt releases the link');
+
+    const signed = await signLink(app, token!);
+    assert.equal(signed.status, 201, await signed.clone().text());
+    const { id: recordId } = (await signed.json()) as { id: string };
+    const record = app.sealform.store.getEntry(recordId) as SealformRecord;
+    assert.deepEqual(record.envelope, { id: env.id, role: 'signer', order: 1 });
+    assert.equal(app.admin.envelope(env.id)!.status, 'awaiting-countersignature');
+    assert.equal(app.admin.envelope(env.id)!.recordHash, record.hash);
+
+    // One use only.
+    assert.equal((await fetch(`${app.url}/sealform/api/envelopes/${token}`)).status, 409);
+    assert.equal((await signLink(app, token!)).status, 409);
+
+    // Countersign: sealed into the audit log, confirmed to the signer by email.
+    const detail = await owner.get(`/contracts/${env.id}`);
+    assert.match(detail.text, /Countersign as owner@example.com/);
+    const done = await owner.post(`/contracts/${env.id}/countersign`, { csrf });
+    assert.equal(done.location, `${BASE}/contracts/${env.id}?m=saved`);
+    const finished = app.admin.envelope(env.id)!;
+    assert.equal(finished.status, 'complete');
+    assert.equal(finished.countersignedBy, 'owner@example.com');
+    assert.match(finished.finalHash!, /^[0-9a-f]{64}$/);
+    assert.notEqual(finished.finalHash, record.hash);
+    assert.equal((await owner.post(`/contracts/${env.id}/countersign`, { csrf })).status, 409, 'cannot countersign twice');
+
+    const audit = app.admin.auditEntries().filter((e) => e.action.startsWith('envelope.'));
+    assert.deepEqual(audit.map((e) => e.action), ['envelope.create', 'envelope.countersign']);
+    assert.equal(audit[1]!.details.recordHash, record.hash);
+    assert.equal((await verifyChain(app.admin.auditEntries(), keyset)).ok, true);
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    const { readdir, readFile } = await import('node:fs/promises');
+    const mails = await Promise.all((await readdir(join(dir, 'contracts', 'outbox'))).map((f) => readFile(join(dir, 'contracts', 'outbox', f), 'utf8')));
+    assert.ok(mails.some((m) => /Subject: Countersigned: Acme services/.test(m) && /To: pat@example.org/.test(m)));
+    assert.equal(JSON.stringify(app.admin.auditEntries()).includes(token), false, 'the token never reaches the audit log');
+  } finally {
+    await app.stop();
+  }
+});
+
+test('a link without countersignature completes on signing; cancelled and expired links stop working', async () => {
+  const app = await start('contracts-lifecycle');
+  try {
+    const owner = await ownerSession(app);
+    const plain = await createLink(owner, { counter: '' });
+    assert.equal((await signLink(app, plain.token!)).status, 201);
+    const env = app.admin.envelopes().find((e) => e.status === 'complete')!;
+    assert.equal(env.finalHash, env.recordHash, 'with no countersignature the record hash is final');
+
+    const cancelled = await createLink(owner, { label: 'To cancel', email: 'c@example.org' });
+    const target = app.admin.envelopes().find((e) => e.label === 'To cancel')!;
+    assert.equal((await owner.post(`/contracts/${target.id}/revoke`, { csrf: cancelled.csrf })).status, 303);
+    assert.equal((await fetch(`${app.url}/sealform/api/envelopes/${cancelled.token}`)).status, 410);
+    assert.equal((await signLink(app, cancelled.token!)).status, 410);
+    assert.equal((await owner.post(`/contracts/${target.id}/revoke`, { csrf: cancelled.csrf })).status, 409);
+
+    const short = await createLink(owner, { label: 'Short', email: 's@example.org', days: '7' });
+    clock += 8 * 86_400_000;
+    assert.equal((await fetch(`${app.url}/sealform/api/envelopes/${short.token}`)).status, 410);
+  } finally {
+    await app.stop();
+  }
+});
+
+test('contract links are for private documents, need an owner or admin, and review the signer country first', async () => {
+  const docs = join(dir, 'docs-contract');
+  const { cp, readFile, writeFile } = await import('node:fs/promises');
+  await cp(FIXTURES, docs, { recursive: true });
+  const manifestPath = join(docs, 'partner-contract', 'PARTNER-1', 'document.json');
+  const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+  manifest.category = 'suretyship';
+  await writeFile(manifestPath, JSON.stringify(manifest));
+  const app = await start('contracts-review', { documentsDir: docs });
+  try {
+    const owner = await ownerSession(app);
+    const csrf = await owner.csrf('/contracts');
+
+    const publicDoc = await owner.post('/contracts', { csrf, document: 'example-agreement@EXAMPLE-1', label: 'x', name: 'X Y', email: 'x@example.org', days: '14' });
+    assert.equal(publicDoc.status, 400, 'public documents are signed through the public form');
+
+    const blocked = await owner.post('/contracts', { csrf, document: 'partner-contract@PARTNER-1', label: 'Surety', name: 'Pat Partner', email: 'pat@example.org', days: '14', country: 'DE' });
+    assert.equal(blocked.status, 409);
+    assert.match(blocked.text, /In Germany.*suretyship document needs wet-ink.*Section 766/);
+    assert.equal(app.admin.envelopes().length, 0);
+
+    const allowed = await owner.post('/contracts', { csrf, document: 'partner-contract@PARTNER-1', label: 'Surety', name: 'Pat Partner', email: 'pat@example.org', days: '14', country: 'DE', override: 'Signed copy also sent by post' });
+    assert.equal(allowed.status, 200);
+    assert.equal(app.admin.envelopes()[0]!.overrideReason, 'Signed copy also sent by post');
+    assert.equal(app.admin.auditEntries().find((e) => e.action === 'envelope.create')!.details.override, 'Signed copy also sent by post');
+
+    const reviewer = app.admin.createAccount({ email: 'rae@example.com', name: 'Rae', role: 'reviewer', passwordHash: await hashPassword(PASSWORD), mustChangePassword: false, now: new Date(clock).toISOString() });
+    assert.ok(reviewer);
+    const rae = new Browser(app);
+    await rae.login('rae@example.com');
+    assert.equal((await rae.get('/contracts')).status, 403);
+    assert.equal((await rae.post('/contracts', { csrf, document: 'partner-contract@PARTNER-1' })).status, 403);
   } finally {
     await app.stop();
   }

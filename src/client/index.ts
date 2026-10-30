@@ -26,6 +26,9 @@ export interface DocumentResponse {
   consents: { name: string; label: string; required: boolean }[];
   session: { id: string; expiresAt: string };
   botCheck: string;
+  /** Present for a private link: fields the sender fixed, shown read-only. */
+  prefill?: Record<string, string>;
+  envelope?: { label: string; expiresAt: string };
 }
 
 export interface Receipt {
@@ -66,6 +69,7 @@ export interface Labels {
   downloadRecord: string;
   emptySignature: string;
   botCheckPending: string;
+  fixedByLink: string;
 }
 
 export const defaultLabels: Labels = {
@@ -96,12 +100,16 @@ export const defaultLabels: Labels = {
   downloadRecord: 'Download sealed record',
   emptySignature: 'draw your signature in the box',
   botCheckPending: 'Please complete the check above.',
+  fixedByLink: 'Fixed by the link you were sent.',
 };
 
 export interface MountOptions {
   /** Where the server's handler is mounted, such as "/sealform" or "https://sign.example.com/sealform". */
   endpoint: string;
-  documentId: string;
+  /** The public document to sign. Not needed with an envelopeToken. */
+  documentId?: string;
+  /** Opens a private contract link instead of a public document. */
+  envelopeToken?: string;
   lang?: string;
   /** Cloudflare Turnstile site key, when the server uses TurnstileCheck. */
   turnstileSiteKey?: string;
@@ -131,7 +139,9 @@ export async function mountSealform(root: HTMLElement, options: MountOptions): P
   root.classList.add('sf');
   root.setAttribute('aria-busy', 'true');
   const query = options.lang ? `?lang=${encodeURIComponent(options.lang)}` : '';
-  const response = await fetch(`${endpoint}/api/documents/${encodeURIComponent(options.documentId)}${query}`, { headers: { accept: 'application/json' } });
+  if (!options.envelopeToken && !options.documentId) throw new Error('mountSealform needs a documentId or an envelopeToken');
+  const source = options.envelopeToken ? `${endpoint}/api/envelopes/${encodeURIComponent(options.envelopeToken)}` : `${endpoint}/api/documents/${encodeURIComponent(options.documentId!)}`;
+  const response = await fetch(`${source}${query}`, { headers: { accept: 'application/json' } });
   if (!response.ok) {
     root.removeAttribute('aria-busy');
     root.replaceChildren(el('p', { class: 'sf-error', role: 'alert' }, await errorMessage(response, labels)));
@@ -179,11 +189,44 @@ export async function mountSealform(root: HTMLElement, options: MountOptions): P
   const detailFields = data.fields.filter((field) => field.type !== 'checkbox');
   const checkFields = data.fields.filter((field) => field.type === 'checkbox');
 
+  // Shown once a country is chosen: that country's notices, and any fields its rules add.
+  const noticeBox = el('section', { class: 'sf-notices', hidden: '', 'aria-live': 'polite' });
+  const extraBox = el('div', { class: 'sf-extra' });
   if (detailFields.length) {
     const fieldset = el('fieldset', { class: 'sf-fieldset' }, el('legend', {}, labels.yourDetails));
     for (const field of detailFields) fieldset.append(renderField(field));
-    form.append(fieldset);
+    fieldset.append(extraBox);
+    form.append(fieldset, noticeBox);
   }
+
+  const countrySpec = data.fields.find((field) => field.type === 'country');
+  const countryInput = countrySpec ? inputs.get(`fields.${countrySpec.name}`) : undefined;
+  let profile: { sha256: string; extra: FieldSpec[]; country: string } | undefined;
+  let extraKeys: string[] = [];
+
+  async function loadProfile(code: string): Promise<void> {
+    for (const key of extraKeys) {
+      inputs.delete(key);
+      errorSlots.delete(key);
+    }
+    extraKeys = [];
+    extraBox.replaceChildren();
+    profile = undefined;
+    noticeBox.hidden = true;
+    if (!code) return;
+    const result = await fetch(`${endpoint}/api/profile/${encodeURIComponent(code)}`, { headers: { accept: 'application/json' } }).catch(() => undefined);
+    if (!result?.ok) return;
+    const body = (await result.json()) as { profile: { name: string; notices: string[]; requiredFields: FieldSpec[] }; sha256: string };
+    const extra = body.profile.requiredFields.filter((field) => !data.fields.some((own) => own.name === field.name));
+    for (const field of extra) {
+      extraBox.append(renderField({ ...field, required: field.required ?? false }));
+      extraKeys.push(`fields.${field.name}`);
+    }
+    noticeBox.replaceChildren(el('h3', {}, body.profile.name), ...body.profile.notices.map((notice) => el('p', {}, notice)));
+    noticeBox.hidden = false;
+    profile = { sha256: body.sha256, extra, country: code };
+  }
+  countryInput?.addEventListener('change', () => void loadProfile((countryInput as HTMLSelectElement).value));
 
   const agreeSet = el('fieldset', { class: 'sf-fieldset' }, el('legend', {}, labels.agreement));
   for (const field of checkFields) agreeSet.append(renderCheckbox(`fields.${field.name}`, field.label, field.required ?? false));
@@ -291,8 +334,10 @@ export async function mountSealform(root: HTMLElement, options: MountOptions): P
     submit.disabled = true;
     submit.textContent = labels.signing;
     try {
+      // The notices must be the ones for the country that is chosen right now.
+      if (countryInput && countryInput.value && profile?.country !== countryInput.value) await loadProfile(countryInput.value);
       const fields: Record<string, string | boolean> = {};
-      for (const field of data.fields) {
+      for (const field of [...data.fields, ...(profile?.extra ?? [])]) {
         const input = inputs.get(`fields.${field.name}`)!;
         fields[field.name] = field.type === 'checkbox' ? (input as HTMLInputElement).checked : input.value;
       }
@@ -323,6 +368,8 @@ export async function mountSealform(root: HTMLElement, options: MountOptions): P
           pointer: matchMedia('(pointer: coarse)').matches ? 'coarse' : 'fine',
         },
         ...(botToken ? { botToken } : {}),
+        ...(profile ? { profileSha256: profile.sha256 } : {}),
+        ...(options.envelopeToken ? { envelopeToken: options.envelopeToken } : {}),
       };
 
       let result: Response;
@@ -431,11 +478,18 @@ export async function mountSealform(root: HTMLElement, options: MountOptions): P
     if (field.maxLength && !(input instanceof HTMLSelectElement)) input.setAttribute('maxlength', String(field.maxLength));
     if (required) input.setAttribute('required', '');
     input.setAttribute('aria-describedby', describedBy);
+    const fixed = data.prefill?.[field.name];
+    if (fixed !== undefined) {
+      input.value = fixed;
+      input.setAttribute('readonly', '');
+      input.setAttribute('aria-readonly', 'true');
+    }
     inputs.set(`fields.${field.name}`, input);
     return el('div', { class: 'sf-field' },
       el('label', { for: id }, field.label, ' ', el('span', { class: 'sf-req' }, `(${required ? labels.required : labels.optional})`)),
       input,
       ...(field.help ? [el('p', { class: 'sf-help', id: `${id}-help` }, field.help)] : []),
+      ...(fixed !== undefined ? [el('p', { class: 'sf-help' }, labels.fixedByLink)] : []),
       slot(`fields.${field.name}`, `${id}-error`),
     );
   }

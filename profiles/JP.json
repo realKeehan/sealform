@@ -1,0 +1,37 @@
+{
+  "id": "JP",
+  "version": 1,
+  "name": "Japan",
+  "eSignLaw": {
+    "name": "Act on Electronic Signatures and Certification Business",
+    "citation": "Act No. 102 of 2000, Article 3; Civil Code Article 522(2)"
+  },
+  "level": "ses",
+  "levelNote": "Contracts generally need no particular form, so a simple electronic signature can be enough as evidence of agreement.",
+  "ageOfMajority": 18,
+  "ageNote": "Japan lowered the age of majority from 20 to 18 in April 2022.",
+  "formRequirements": [
+    {
+      "category": "will",
+      "requires": "wet-ink",
+      "note": "Wills must be handwritten, or made by notarial deed or in secret; electronic wills are not recognised."
+    }
+  ],
+  "requiredFields": [],
+  "notices": [
+    "Electronic signature law that applies: Act on Electronic Signatures and Certification Business. Contracts generally need no particular form, so a simple electronic signature can be enough as evidence of agreement.",
+    "You must be at least 18 years old to sign this agreement. Japan lowered the age of majority from 20 to 18 in April 2022.",
+    "If you are unsure whether this applies to you, ask for a paper alternative before signing."
+  ],
+  "privacyRegime": "appi",
+  "limitationPeriod": "P5Y",
+  "limitationNote": "Five years from knowledge, ten from when the claim could first be exercised (Civil Code art. 166).",
+  "drafted": "2026-10-30",
+  "reviewedBy": null,
+  "sources": [
+    {
+      "title": "Japanese Law Translation (search: Act on Electronic Signatures and Certification Business)",
+      "url": "https://www.japaneselawtranslation.go.jp/en/"
+    }
+  ]
+}

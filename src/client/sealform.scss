@@ -89,6 +89,35 @@
   }
 }
 
+.sf-notices {
+  padding: 0.85rem 1.1rem;
+  background: var(--_paper);
+  border: 1px solid var(--_line);
+  border-left: 4px solid var(--_accent);
+  border-radius: var(--_radius);
+
+  h3 {
+    margin: 0 0 0.4rem;
+    font-size: 1rem;
+  }
+  p {
+    margin: 0 0 0.5rem;
+    font-size: 0.92rem;
+  }
+  > :last-child {
+    margin-bottom: 0;
+  }
+}
+
+.sf input[readonly] {
+  background: var(--_paper);
+  color: var(--_muted);
+}
+
+.sf-extra > * + * {
+  margin-top: 1rem;
+}
+
 .sf-disclosure {
   padding: 0.75rem 1rem;
   background: var(--_paper);

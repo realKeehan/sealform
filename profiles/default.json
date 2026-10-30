@@ -1,0 +1,47 @@
+{
+  "id": "default",
+  "version": 1,
+  "name": "Other countries",
+  "eSignLaw": {
+    "name": "No country profile",
+    "citation": "Cautious default"
+  },
+  "level": "ses",
+  "levelNote": "Rules for electronic signatures differ by country. This is a simple electronic signature; some documents need more where you live.",
+  "ageOfMajority": 18,
+  "ageNote": "Eighteen is assumed; the age may be higher where you live.",
+  "formRequirements": [
+    {
+      "category": "will",
+      "requires": "wet-ink",
+      "note": "Wills almost everywhere need a handwritten signature or a notary."
+    },
+    {
+      "category": "real-estate",
+      "requires": "notarization",
+      "note": "Property transfers usually need a notary or registry formalities."
+    },
+    {
+      "category": "family",
+      "requires": "wet-ink",
+      "note": "Family-law documents are commonly excluded from simple electronic signatures."
+    }
+  ],
+  "requiredFields": [],
+  "notices": [
+    "Electronic signature law that applies: No country profile. Rules for electronic signatures differ by country. This is a simple electronic signature; some documents need more where you live.",
+    "You must be at least 18 years old to sign this agreement. Eighteen is assumed; the age may be higher where you live.",
+    "If you are unsure whether this applies to you, ask for a paper alternative before signing."
+  ],
+  "privacyRegime": "unspecified",
+  "limitationPeriod": "P6Y",
+  "limitationNote": "No country-specific research; six years is a cautious guess, not a legal period.",
+  "drafted": "2026-10-30",
+  "reviewedBy": null,
+  "sources": [
+    {
+      "title": "UNCITRAL Model Law on Electronic Signatures",
+      "url": "https://uncitral.un.org/en/texts/ecommerce/modellaw/electronic_signatures"
+    }
+  ]
+}

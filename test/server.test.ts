@@ -75,12 +75,18 @@ function png(): string {
 async function open(url: string, lang = 'en') {
   const response = await fetch(`${url}/sealform/api/documents/example-agreement?lang=${lang}`);
   assert.equal(response.status, 200);
-  return (await response.json()) as {
+  const profile = (await (await fetch(`${url}/sealform/api/profile/DE`)).json()) as { sha256: string };
+  return {
+    ...((await response.json()) as OpenedDocument),
+    profileSha256: profile.sha256,
+  };
+}
+
+type OpenedDocument = {
     document: { id: string; version: string; lang: string; text: string; sha256: string; manifestSha256: string };
     disclosure: { text: string } | null;
     session: { id: string };
-  };
-}
+};
 
 /** A believable pen stroke: 20 points, 95 px wide. */
 function stroke() {
@@ -95,6 +101,7 @@ function submission(doc: Awaited<ReturnType<typeof open>>, overrides: Record<str
     lang: doc.document.lang,
     textSha256: doc.document.sha256,
     manifestSha256: doc.document.manifestSha256,
+    profileSha256: doc.profileSha256,
     fields: { legalName: 'Ada Example', email: 'ada@example.com', country: 'DE', adult: true },
     consents: { esign: true, acceptVersion: true },
     signature: { typedName: 'ada example', vector: [{ points: stroke() }], png: png() },
@@ -254,7 +261,9 @@ test('names outside the PDF fonts still sign; the PDF marks them', async () => {
   const app = await start('unicode');
   try {
     const doc = await open(app.url);
+    const jp = (await (await fetch(`${app.url}/sealform/api/profile/JP`)).json()) as { sha256: string };
     const response = await post(app.url, submission(doc, {
+      profileSha256: jp.sha256,
       fields: { legalName: '山田 太郎', email: 'taro@example.jp', country: 'JP', adult: true },
       signature: { typedName: '山田 太郎', vector: [{ points: stroke() }], png: png() },
     }));
@@ -320,4 +329,120 @@ test('a document that requires an unconfigured check refuses to load', async () 
 
 test('a sealing key missing from the key set is refused at startup', async () => {
   await assert.rejects(start('nokey', { keySet: { format: KEYSET_FORMAT, keys: [] } }), /does not contain the sealing key/);
+});
+
+
+// Jurisdiction profiles ------------------------------------------------------------------------------
+
+test('every shipped profile loads, cites https sources and says it is unreviewed', async () => {
+  const { ProfileRegistry, profileHealth } = await import('../src/server/index.ts');
+  const registry = await ProfileRegistry.load();
+  const ids = registry.all().map((p) => p.profile.id);
+  for (const id of ['default', 'US', 'US-CA', 'GB', 'DE', 'LV', 'AR', 'JP', 'ZA', 'NL', 'BE']) assert.ok(ids.includes(id), id);
+  for (const { profile, sha256 } of registry.all()) {
+    assert.match(sha256, /^[0-9a-f]{64}$/);
+    assert.ok(profile.sources.every((s) => s.url.startsWith('https://')), profile.id);
+    assert.ok(profile.notices.length >= 3, profile.id);
+    assert.equal(profile.reviewedBy, null, 'nothing is claimed to be lawyer-reviewed');
+    assert.equal(profileHealth(profile, new Date('2026-11-01')).unreviewed, true);
+  }
+  assert.equal(profileHealth(registry.get('DE')!.profile, new Date('2028-01-01')).stale, true, 'facts go stale after a year');
+  assert.equal(registry.resolve('DE').fallback, false);
+  assert.equal(registry.resolve('FR').loaded.profile.id, 'default', 'countries without a profile get the cautious default');
+  assert.equal(registry.resolve('FR').fallback, true);
+  assert.equal(registry.get('US-CA')!.profile.parent, 'US');
+});
+
+test('the signer country picks the profile, and the profile hash goes into the record', async () => {
+  const app = await start('profile-record');
+  try {
+    const api = (await (await fetch(`${app.url}/sealform/api/profile/de`)).json()) as { profile: { id: string; notices: string[] }; sha256: string; fallback: boolean };
+    assert.equal(api.profile.id, 'DE');
+    assert.equal(api.fallback, false);
+    assert.match(api.profile.notices.join(' '), /text form/);
+    const fallback = (await (await fetch(`${app.url}/sealform/api/profile/FR`)).json()) as { profile: { id: string }; fallback: boolean };
+    assert.deepEqual([fallback.profile.id, fallback.fallback], ['default', true]);
+
+    const doc = await open(app.url);
+    const response = await post(app.url, submission(doc));
+    assert.equal(response.status, 201, await response.clone().text());
+    const { id } = (await response.json()) as { id: string };
+    const record = app.sealform.store.getEntry(id) as SealformRecord;
+    assert.deepEqual(record.jurisdiction, { profile: 'DE', version: 1, sha256: api.sha256, fallback: false });
+  } finally {
+    await app.stop();
+  }
+});
+
+test('signing without the notices the signer was shown, or with stale ones, is refused', async () => {
+  const app = await start('profile-hash');
+  try {
+    const doc = await open(app.url);
+    const missing = await post(app.url, submission(doc, { profileSha256: undefined }));
+    assert.equal(missing.status, 409);
+    const stale = await post(app.url, submission(doc, { profileSha256: 'f'.repeat(64) }));
+    assert.equal(stale.status, 409);
+    assert.match(((await stale.json()) as { error: string }).error, /notices shown for your country/);
+    assert.equal((await post(app.url, submission(doc))).status, 201, 'the session was released, so the right hash signs');
+  } finally {
+    await app.stop();
+  }
+});
+
+test('document types a country excludes from simple e-signatures are refused there but not elsewhere', async () => {
+  const docs = join(dir, 'docs-will');
+  await cp(FIXTURES, docs, { recursive: true });
+  const manifestPath = join(docs, 'example-agreement', 'EXAMPLE-1', 'document.json');
+  const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+  manifest.category = 'suretyship';
+  await writeFile(manifestPath, JSON.stringify(manifest));
+  const app = await start('profile-form', { documentsDir: docs });
+  try {
+    const doc = await open(app.url);
+    const germany = await post(app.url, submission(doc));
+    assert.equal(germany.status, 422);
+    assert.match(((await germany.json()) as { error: string }).error, /Germany.*Section 766/);
+    assert.equal(app.sealform.store.count(), 0);
+
+    // The United States profile has no suretyship rule, so the same document signs there.
+    const us = (await (await fetch(`${app.url}/sealform/api/profile/US`)).json()) as { sha256: string };
+    const retry = await post(app.url, submission(doc, { profileSha256: us.sha256, fields: { legalName: 'Ada Example', email: 'ada@example.com', country: 'US', adult: true } }));
+    assert.equal(retry.status, 201, await retry.clone().text());
+  } finally {
+    await app.stop();
+  }
+});
+
+test('a profile can add required fields for its country, and the record keeps them', async () => {
+  const profilesDir = join(dir, 'profiles-extra');
+  await cp(new URL('../profiles', import.meta.url), profilesDir, { recursive: true });
+  const dePath = join(profilesDir, 'DE.json');
+  const de = JSON.parse(await readFile(dePath, 'utf8'));
+  de.requiredFields = [{ name: 'taxId', label: 'Tax identification number', type: 'text', required: true, maxLength: 20 }];
+  await writeFile(dePath, JSON.stringify(de));
+  const app = await start('profile-fields', { profilesDir });
+  try {
+    const { sha256 } = (await (await fetch(`${app.url}/sealform/api/profile/DE`)).json()) as { sha256: string };
+    const doc = { ...(await open(app.url)), profileSha256: sha256 };
+    const without = await post(app.url, submission(doc));
+    assert.equal(without.status, 422);
+    assert.ok(((await without.json()) as { fields: Record<string, string> }).fields['fields.taxId']);
+    const ok = await post(app.url, submission(doc, { fields: { legalName: 'Ada Example', email: 'ada@example.com', country: 'DE', adult: true, taxId: 'DE123456789' } }));
+    assert.equal(ok.status, 201, await ok.clone().text());
+    const { id } = (await ok.json()) as { id: string };
+    assert.equal((app.sealform.store.getEntry(id) as SealformRecord).fields.taxId, 'DE123456789');
+  } finally {
+    await app.stop();
+  }
+});
+
+test('a bad profile file stops startup with a clear message', async () => {
+  const dirBad = join(dir, 'profiles-bad');
+  await cp(new URL('../profiles', import.meta.url), dirBad, { recursive: true });
+  await writeFile(join(dirBad, 'FR.json'), JSON.stringify({ id: 'FR', version: 1 }));
+  const { ProfileRegistry } = await import('../src/server/index.ts');
+  await assert.rejects(ProfileRegistry.load(dirBad), /FR\.json/);
+  await rm(join(dirBad, 'default.json'));
+  await rm(join(dirBad, 'FR.json'));
+  await assert.rejects(ProfileRegistry.load(dirBad), /default\.json/);
 });
