@@ -1172,14 +1172,6 @@ export async function createAdmin(options: AdminOptions) {
         // Every request must carry a valid Access token, and the session must belong to that person.
         const identity = await sso.verify(accessToken(req.headers));
         if (!identity) throw new HttpError(403, 'This dashboard is only reachable through Cloudflare Access. Open it from its normal address and sign in there.');
-        if (path === '/login') {
-          if (method === 'GET') {
-            redirect(ctx, '/');
-            return true;
-          }
-          throw new HttpError(404, 'Not found');
-        }
-        if (path === '/login/2fa' || path === '/2fa') throw new HttpError(404, 'Not found');
         if (!loadSession(ctx, 'active') || ctx.account!.email !== identity.email) {
           if (ctx.session) db.deleteSession(ctx.session.id);
           delete ctx.session;
@@ -1187,14 +1179,13 @@ export async function createAdmin(options: AdminOptions) {
           ssoSignIn(ctx, identity);
         }
       } else {
-        // The dashboard's own address is the sign-in: /login when adminPath is "/login". The old
-        // <adminPath>/login and <adminPath>/login/2fa addresses keep working.
-        if (path === '/login' || (path === '/' && method === 'POST')) {
-          if (method === 'POST') await login(ctx);
-          else loginPage(ctx);
+        // The dashboard's own address is the sign-in: /login when adminPath is "/login". The code
+        // step is <adminPath>/2fa.
+        if (path === '/' && method === 'POST') {
+          await login(ctx);
           return true;
         }
-        if (path === '/login/2fa' || path === '/2fa') {
+        if (path === '/2fa') {
           await twoFactor(ctx);
           return true;
         }
