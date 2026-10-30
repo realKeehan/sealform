@@ -105,6 +105,37 @@ export class ProfileRegistry {
   }
 }
 
+/** Length of an ISO 8601 duration in years, approximately (a month is 1/12, a week 7/365). NaN if invalid. */
+export function durationYears(iso: string): number {
+  const m = /^P(?:(\d+)Y)?(?:(\d+)M)?(?:(\d+)W)?(?:(\d+)D)?$/.exec(iso);
+  if (!m || iso === 'P') return Number.NaN;
+  return Number(m[1] ?? 0) + Number(m[2] ?? 0) / 12 + (Number(m[3] ?? 0) * 7) / 365 + Number(m[4] ?? 0) / 365;
+}
+
+export interface RetentionRow {
+  id: string;
+  name: string;
+  period: string;
+  years: number;
+  fallback: boolean;
+}
+
+/**
+ * Compares how long signed records are kept with the usual claim period in each signer's country. A
+ * retention shorter than the longest period means a late claim could arrive after the evidence is gone.
+ * It flags; it does not enforce, because retention is also limited by data protection law.
+ */
+export function retentionReview(retention: string, resolved: { loaded: LoadedProfile; fallback: boolean }[]): { rows: RetentionRow[]; longest: RetentionRow | undefined; tooShort: boolean } {
+  const seen = new Map<string, RetentionRow>();
+  for (const { loaded, fallback } of resolved) {
+    const p = loaded.profile;
+    seen.set(p.id, { id: p.id, name: p.name, period: p.limitationPeriod, years: durationYears(p.limitationPeriod), fallback });
+  }
+  const rows = [...seen.values()].sort((a, b) => b.years - a.years);
+  const longest = rows[0];
+  return { rows, longest, tooShort: !!longest && durationYears(retention) < longest.years - 1e-9 };
+}
+
 /** Flags for the dashboard: facts go stale, and nothing here is reviewed until someone says so. */
 export function profileHealth(profile: Profile, now: Date): { stale: boolean; unreviewed: boolean } {
   const reference = new Date(profile.reviewedBy?.on ?? profile.drafted);

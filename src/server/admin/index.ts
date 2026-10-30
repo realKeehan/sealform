@@ -11,7 +11,7 @@ import type { Check } from '../checks.ts';
 import { hasPlaceholder, type DocumentRegistry, type DocumentStatus, type LoadedDocument } from '../documents.ts';
 import { RateLimiter, type BotCheck } from '../guards.ts';
 import { header, HttpError } from '../http.ts';
-import { profileHealth, type ProfileRegistry } from '../profiles.ts';
+import { profileHealth, retentionReview, type LoadedProfile, type ProfileRegistry } from '../profiles.ts';
 import { normalizePrefix, type SiteLayer } from '../site.ts';
 import type { SqliteStore } from '../store.ts';
 import {
@@ -41,6 +41,8 @@ export interface AdminOptions {
   keySet: KeySet;
   checks: Map<string, Check>;
   profiles: ProfileRegistry;
+  /** The profile for the operator's own side of a contract, checked at link creation. */
+  operatorProfile: LoadedProfile | undefined;
   /** Set when sealform also serves the website; the Site page manages it. */
   siteInfo: (() => ReturnType<SiteLayer['info']>) | undefined;
   /** Where the public signing API is mounted, used to build private signing links. */
@@ -620,6 +622,11 @@ export async function createAdmin(options: AdminOptions) {
     const csrf = csrfField(ctx.session!.csrf);
     const missing = doc.manifest.requiredChecks.filter((kind) => !options.checks.get(kind)?.enabled);
     const unfinished = hasPlaceholder(doc);
+    const signedFrom = new Set<string>();
+    for (const row of db.submissions({ documentId: doc.manifest.id, limit: 1_000_000, offset: 0 }).rows) {
+      if (row.document_version === doc.manifest.version && typeof row.country === 'string' && row.country) signedFrom.add(row.country);
+    }
+    const review = retentionReview(doc.manifest.retention.signed, [...signedFrom].map((country) => options.profiles.resolve(country)));
     const action = (to: DocumentStatus, label: string) =>
       html`<form method="post" action="${base}/documents/${doc.manifest.id}/${doc.manifest.version}/status" class="inline">${csrf}<input type="hidden" name="status" value="${to}"><button type="submit">${label}</button></form>`;
     page(
@@ -635,9 +642,13 @@ export async function createAdmin(options: AdminOptions) {
           <dt>Category</dt><dd>${doc.manifest.category}</dd>
           <dt>Languages</dt><dd>${doc.manifest.languages.join(', ')} (governing: ${doc.manifest.governingLang})</dd>
           <dt>Retention</dt><dd>signed ${doc.manifest.retention.signed}, unsigned ${doc.manifest.retention.unsigned}</dd>
+          <dt>Claim periods</dt><dd>${review.rows.length
+            ? html`${review.rows.map((r) => html`${r.name}${r.fallback ? ' (default)' : ''}: ${r.period}<br>`)}`
+            : 'No signatures yet, so no countries to compare.'}</dd>
           <dt>Required checks</dt><dd>${doc.manifest.requiredChecks.join(', ') || 'none'}</dd>
           <dt>Form hash</dt><dd><code>${doc.manifestSha256}</code></dd>
         </dl>
+        ${review.tooShort ? html`<p class="bad">Signed records are kept for ${doc.manifest.retention.signed}, shorter than the usual claim period in ${review.longest!.name} (${review.longest!.period}). A late claim could arrive after the record is gone. This is a flag, not a rule: retention is also limited by data protection law, so decide with advice.</p>` : ''}
         ${missing.length ? html`<p class="bad">Cannot be published until these checks are configured: ${missing.join(', ')}</p>` : ''}
         ${unfinished ? html`<p class="bad">Cannot be published: the text still has a [TO CONFIRM: ...] marker for something that must be filled in first.</p>` : ''}
         <div class="actions">
@@ -695,7 +706,8 @@ export async function createAdmin(options: AdminOptions) {
       <section class="card">
         <h2>Hidden and private pages</h2>
         <p class="muted">A path covers everything under it. <strong>Hidden</strong> answers 404 to everyone. <strong>Private</strong> answers 404 unless you are signed in to this dashboard. The longest matching path wins.</p>
-        <div class="table-wrap"><table>
+        ${db.siteRules().length === 0 ? html`<p class="muted">No rules yet. Every page of the site is public.</p>` : ''}
+        <div class="table-wrap" ${db.siteRules().length === 0 ? raw('hidden') : ''}><table>
           <thead><tr><th>Path</th><th>Mode</th><th>Set by</th><th></th></tr></thead>
           <tbody>${db.siteRules().map((rule) => html`<tr><td><code>${rule.prefix}</code></td><td>${rule.mode}</td><td>${rule.createdBy}, ${shortDate(rule.createdAt)}</td>
             <td><form method="post" action="${base}/site/rules/delete" class="inline">${csrf}<input type="hidden" name="prefix" value="${rule.prefix}"><button type="submit">Remove</button></form></td></tr>`)}</tbody>
@@ -766,6 +778,7 @@ export async function createAdmin(options: AdminOptions) {
       'contracts',
       html`<h1>Contracts</h1>
       <p class="muted">Send a private link to one person to sign a document that is not listed publicly. The link works once, expires, and fixes the signer's name and email.</p>
+      ${options.operatorProfile ? html`<p class="muted">Your side is checked against <strong>${options.operatorProfile.profile.name}</strong>: ${options.operatorProfile.profile.levelNote}</p>` : ''}
       ${extra?.error ? html`<p class="flash flash--error" role="alert">${extra.error}</p>` : ''}
       ${extra?.created
         ? html`<section class="card notice" role="status"><h2>Link for ${extra.created.email}</h2>
@@ -820,6 +833,11 @@ export async function createAdmin(options: AdminOptions) {
     // Review the signer's country before a link exists. A document the law there excludes from simple
     // e-signatures needs a stated reason to proceed, and the reason is kept in the audit log.
     const override = (form.get('override') ?? '').trim().slice(0, 300);
+    // Your own side first: the law where you operate can exclude a document type too.
+    const ours = options.operatorProfile?.profile.formRequirements.find((r) => r.category === doc.manifest.category);
+    if (ours && !override) {
+      return contractsPage(ctx, { error: `Where you operate (${options.operatorProfile!.profile.name}), a ${doc.manifest.category} document needs ${ours.requires}, not a simple electronic signature. ${ours.note} Enter a reason to send it anyway.` }, 409);
+    }
     if (country) {
       const { loaded } = options.profiles.resolve(country);
       const needs = loaded.profile.formRequirements.find((r) => r.category === doc.manifest.category);
@@ -843,7 +861,7 @@ export async function createAdmin(options: AdminOptions) {
       expiresAt: new Date(created.getTime() + days * 86_400_000).toISOString(),
       overrideReason: override || null,
     });
-    await audit(ctx, 'envelope.create', env.id, { document: `${doc.manifest.id}@${doc.manifest.version}`, signer: email, expiresAt: env.expiresAt, countersign: env.counterRequired, country: country || null, override: override || null });
+    await audit(ctx, 'envelope.create', env.id, { document: `${doc.manifest.id}@${doc.manifest.version}`, signer: email, expiresAt: env.expiresAt, countersign: env.counterRequired, country: country || null, operatorProfile: options.operatorProfile?.profile.id ?? null, override: override || null });
     contractsPage(ctx, { created: { link: `${options.origin}${options.signBase}/c/${token}`, label, email } });
   }
 
