@@ -30,6 +30,7 @@ import { accessToken, type AccessIdentity, type CloudflareAccess } from './acces
 import { AdminStore, ROLES, type Account, type AdminSession, type Envelope, type Role } from './db.ts';
 import type { Mailer } from '../mailer.ts';
 import { csrfField, html, layout, raw, shortDate, type Raw } from './html.ts';
+import { renderDocumentMarkdown } from './markdown.ts';
 
 export interface AdminOptions {
   base: string;
@@ -480,7 +481,7 @@ export async function createAdmin(options: AdminOptions) {
       ),
     );
     void audit(ctx, 'submissions.export', 'submissions', { count: rows.length, filter: stripUndefined(filter) as Record<string, JsonValue> });
-    download(ctx, 'text/csv; charset=utf-8', `submissions-${nowIso().slice(0, 10)}.csv`, '﻿' + lines.join('\r\n') + '\r\n');
+    download(ctx, 'text/csv; charset=utf-8', `submissions-${nowIso().slice(0, 10)}.csv`, 'ï»¿' + lines.join('\r\n') + '\r\n');
   }
 
   async function submission(ctx: Ctx, id: string): Promise<void> {
@@ -515,7 +516,7 @@ export async function createAdmin(options: AdminOptions) {
               </form>`
             : html`<p>Legal hold: <strong>${summary.hold ? 'on' : 'off'}</strong></p>`}
           ${record
-            ? html`<p><a href="${base}/submissions/${id}/pdf">PDF copy</a> · <a href="${base}/submissions/${id}/record.json">Sealed record</a></p>`
+            ? html`<p><a href="${base}/submissions/${id}/pdf">PDF copy</a> Â· <a href="${base}/submissions/${id}/record.json">Sealed record</a></p>`
             : ''}
         </section>
         ${record
@@ -659,7 +660,7 @@ export async function createAdmin(options: AdminOptions) {
         ${status !== 'published' ? html`<p class="muted">Publishing closes any other published version of ${doc.manifest.id}.</p>` : ''}
       </section>
       ${[...doc.texts.values()].map(
-        (text) => html`<section class="card"><h2>Text (${text.lang})</h2><p class="muted">SHA-256 <code>${text.sha256}</code></p><pre class="doc-text">${text.text}</pre></section>`,
+        (text) => html`<section class="card"><h2>Text (${text.lang})</h2><p class="muted">SHA-256 <code>${text.sha256}</code></p><article class="doc-preview" lang="${text.lang}">${renderDocumentMarkdown(text.text)}</article><details><summary>View exact Markdown source</summary><pre class="doc-text">${text.text}</pre></details></section>`,
       )}`,
     );
   }
