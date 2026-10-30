@@ -8,10 +8,11 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { COUNTRY_CODES, isCountryCode, sha256Canonical, verifyChain, verifyEntry, type ChainEntry, type JsonValue, type KeySet, type SealformRecord, type SealingKey } from '../../core/index.ts';
 import type { Check } from '../checks.ts';
-import type { DocumentRegistry, DocumentStatus, LoadedDocument } from '../documents.ts';
+import { hasPlaceholder, type DocumentRegistry, type DocumentStatus, type LoadedDocument } from '../documents.ts';
 import { RateLimiter, type BotCheck } from '../guards.ts';
 import { header, HttpError } from '../http.ts';
 import { profileHealth, type ProfileRegistry } from '../profiles.ts';
+import { normalizePrefix, type SiteLayer } from '../site.ts';
 import type { SqliteStore } from '../store.ts';
 import {
   decoy,
@@ -40,6 +41,8 @@ export interface AdminOptions {
   keySet: KeySet;
   checks: Map<string, Check>;
   profiles: ProfileRegistry;
+  /** Set when sealform also serves the website; the Site page manages it. */
+  siteInfo: (() => ReturnType<SiteLayer['info']>) | undefined;
   /** Where the public signing API is mounted, used to build private signing links. */
   signBase: string;
   mailer: Mailer;
@@ -146,7 +149,8 @@ export async function createAdmin(options: AdminOptions) {
   }
 
   function cookie(token: string, maxAgeSeconds: number): string {
-    return `${COOKIE}=${token}; Path=${base}; HttpOnly; SameSite=Strict; Max-Age=${maxAgeSeconds}${secure ? '; Secure' : ''}`;
+    // Path=/ so private site pages can recognise a signed-in admin; the cookie is HttpOnly and SameSite=Strict.
+    return `${COOKIE}=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAgeSeconds}${secure ? '; Secure' : ''}`;
   }
 
   // Sessions and guards --------------------------------------------------------------------------
@@ -615,6 +619,7 @@ export async function createAdmin(options: AdminOptions) {
     const status = documents.status(doc);
     const csrf = csrfField(ctx.session!.csrf);
     const missing = doc.manifest.requiredChecks.filter((kind) => !options.checks.get(kind)?.enabled);
+    const unfinished = hasPlaceholder(doc);
     const action = (to: DocumentStatus, label: string) =>
       html`<form method="post" action="${base}/documents/${doc.manifest.id}/${doc.manifest.version}/status" class="inline">${csrf}<input type="hidden" name="status" value="${to}"><button type="submit">${label}</button></form>`;
     page(
@@ -634,8 +639,9 @@ export async function createAdmin(options: AdminOptions) {
           <dt>Form hash</dt><dd><code>${doc.manifestSha256}</code></dd>
         </dl>
         ${missing.length ? html`<p class="bad">Cannot be published until these checks are configured: ${missing.join(', ')}</p>` : ''}
+        ${unfinished ? html`<p class="bad">Cannot be published: the text still has a [TO CONFIRM: ...] marker for something that must be filled in first.</p>` : ''}
         <div class="actions">
-          ${status !== 'published' && !missing.length && doc.manifest.category !== 'disclosure' ? action('published', 'Publish this version') : ''}
+          ${status !== 'published' && !missing.length && !unfinished && doc.manifest.category !== 'disclosure' ? action('published', 'Publish this version') : ''}
           ${status === 'published' ? action('closed', 'Close to new signatures') : ''}
           ${status === 'closed' ? action('draft', 'Return to draft') : ''}
         </div>
@@ -664,6 +670,81 @@ export async function createAdmin(options: AdminOptions) {
       await audit(ctx, 'document.status', `${change.id}@${change.version}`, { from: change.from, to: change.to });
     }
     redirect(ctx, `/documents/${doc.manifest.id}/${doc.manifest.version}?m=saved`);
+  }
+
+  // Site: hidden and private pages, parking, site info ----------------------------------------------
+
+  async function sitePage(ctx: Ctx, error?: string): Promise<void> {
+    need(ctx, 'owner');
+    const csrf = csrfField(ctx.session!.csrf);
+    const info = options.siteInfo ? await options.siteInfo() : undefined;
+    const parked = db.setting('parking') === 'on';
+    page(
+      ctx,
+      'Site',
+      'site',
+      html`<h1>Site</h1>
+      ${error ? html`<p class="flash flash--error" role="alert">${error}</p>` : ''}
+      ${info
+        ? html`<section class="card">
+        <h2>Parking</h2>
+        <p>The site is <strong>${parked ? 'parked' : 'open'}</strong>. ${parked ? 'Visitors see the "back soon" page (HTTP 503) everywhere except the paths listed below.' : 'Switch it on to hold every page behind a "back soon" page.'}</p>
+        <form method="post" action="${base}/site/parking" class="inline">${csrf}<input type="hidden" name="parking" value="${parked ? 'off' : 'on'}"><button type="submit">${parked ? 'Open the site' : 'Park the site'}</button></form>
+        <p class="muted">Stays reachable while parked: ${info.allow.map((p) => html`<code>${p}</code> `)}. The signing form, contract links and this dashboard are not part of the site and keep working. The parked page is <code>parked/index.html</code> in the site folder${info.hasParkedPage ? '' : ' (not found, so a plain built-in page is shown)'}.</p>
+      </section>
+      <section class="card">
+        <h2>Hidden and private pages</h2>
+        <p class="muted">A path covers everything under it. <strong>Hidden</strong> answers 404 to everyone. <strong>Private</strong> answers 404 unless you are signed in to this dashboard. The longest matching path wins.</p>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Path</th><th>Mode</th><th>Set by</th><th></th></tr></thead>
+          <tbody>${db.siteRules().map((rule) => html`<tr><td><code>${rule.prefix}</code></td><td>${rule.mode}</td><td>${rule.createdBy}, ${shortDate(rule.createdAt)}</td>
+            <td><form method="post" action="${base}/site/rules/delete" class="inline">${csrf}<input type="hidden" name="prefix" value="${rule.prefix}"><button type="submit">Remove</button></form></td></tr>`)}</tbody>
+        </table></div>
+        <form method="post" action="${base}/site/rules" class="stack narrow">${csrf}
+          <label>Path <input name="prefix" required maxlength="200" placeholder="/press/internal/"></label>
+          <label>Mode <select name="mode"><option>hidden</option><option>private</option></select></label>
+          <button type="submit">Add or change a rule</button>
+        </form>
+      </section>
+      <section class="card">
+        <h2>Site info</h2>
+        <dl class="facts">
+          <dt>Folder</dt><dd><code>${info.dir}</code>${info.exists ? '' : html` <span class="bad">not found</span>`}</dd>
+          <dt>Last build</dt><dd>${info.builtAt ? shortDate(info.builtAt) : 'no index.html found'}</dd>
+          <dt>404 page</dt><dd>${info.hasNotFoundPage ? 'yes' : 'plain text'}</dd>
+          <dt>Signed records</dt><dd>${store.count()}, chain head <code>${store.head().hash}</code></dd>
+          <dt>Audit entries</dt><dd>${db.auditEntries().length}</dd>
+          <dt>Sealing key</dt><dd>${options.sealingKey.kid}; published keys: ${options.keySet.keys.map((k) => `${k.kid}${k.retiredAt ? ' (retired)' : ''}`).join(', ')}</dd>
+          <dt>Checks not configured</dt><dd>${[...options.checks.values()].filter((c) => !c.enabled).map((c) => c.kind).join(', ') || 'none'}</dd>
+        </dl>
+      </section>`
+        : html`<section class="card"><p>sealform is not serving the website. Set <code>site: { dir: '/path/to/dist' }</code> in the configuration to manage parking and page visibility here.</p></section>`}`,
+    );
+  }
+
+  async function siteAction(ctx: Ctx, action: string): Promise<void> {
+    need(ctx, 'owner');
+    if (!options.siteInfo) throw new HttpError(404, 'The site is not served by sealform');
+    const form = await readForm(ctx);
+    checkPost(ctx, form);
+    if (action === 'parking') {
+      const on = form.get('parking') === 'on';
+      db.saveSetting('parking', on ? 'on' : 'off');
+      await audit(ctx, on ? 'site.park' : 'site.open', 'site');
+    } else if (action === 'rules') {
+      const prefix = normalizePrefix(form.get('prefix') ?? '');
+      const mode = form.get('mode');
+      if (!prefix || prefix === '/' || (mode !== 'hidden' && mode !== 'private')) return sitePage(ctx, 'Enter a path such as /press/internal/ and choose hidden or private. The whole site (/) cannot be hidden here; use parking.');
+      db.setSiteRule(prefix, mode, ctx.account!.email, nowIso());
+      await audit(ctx, 'site.rule.set', prefix, { mode });
+    } else if (action === 'rules/delete') {
+      const prefix = normalizePrefix(form.get('prefix') ?? '');
+      if (!prefix || !db.deleteSiteRule(prefix)) throw new HttpError(404, 'No such rule');
+      await audit(ctx, 'site.rule.delete', prefix);
+    } else {
+      throw new HttpError(404, 'Not found');
+    }
+    redirect(ctx, '/site?m=saved');
   }
 
   // Contracts: private signing links ---------------------------------------------------------------
@@ -1140,6 +1221,7 @@ export async function createAdmin(options: AdminOptions) {
         else if (parts[0] === 'submissions' && parts.length === 3 && ['pdf', 'record.json', 'signature.png'].includes(parts[2]!)) await submissionFile(ctx, parts[1]!, parts[2]!);
         else if (path === '/documents') documentsPage(ctx);
         else if (path === '/contracts') contractsPage(ctx);
+        else if (path === '/site') await sitePage(ctx);
         else if (parts[0] === 'contracts' && parts.length === 2) contractPage(ctx, db.envelope(parts[1]!) ?? (() => { throw new HttpError(404, 'No such contract'); })());
         else if (parts[0] === 'documents' && parts.length === 3) documentPage(ctx, findDoc(parts[1]!, parts[2]!));
         else if (path === '/accounts') accountsPage(ctx);
@@ -1155,6 +1237,7 @@ export async function createAdmin(options: AdminOptions) {
         else if (parts[0] === 'submissions' && parts.length === 3 && parts[2] === 'hold') await setHold(ctx, parts[1]!);
         else if (parts[0] === 'documents' && parts.length === 4 && parts[3] === 'status') await setDocumentStatus(ctx, findDoc(parts[1]!, parts[2]!));
         else if (path === '/contracts') await createContract(ctx);
+        else if (parts[0] === 'site' && parts.length >= 2) await siteAction(ctx, parts.slice(1).join('/'));
         else if (parts[0] === 'contracts' && parts.length === 3) await contractAction(ctx, parts[1]!, parts[2]!);
         else if (path === '/accounts') await accountAction(ctx, undefined, 'create');
         else if (parts[0] === 'accounts' && parts.length === 3) await accountAction(ctx, parts[1]!, parts[2]!);
@@ -1180,7 +1263,18 @@ export async function createAdmin(options: AdminOptions) {
     return doc;
   }
 
-  return { route, db };
+  /** True when the request carries a valid, active dashboard session. Used for private site pages. */
+  function isSignedIn(req: IncomingMessage): boolean {
+    const token = readCookie(req);
+    if (!token) return false;
+    const session = db.sessionByToken(hashToken(token));
+    if (!session || session.stage !== 'active' || session.expiresAt < nowIso()) return false;
+    if (options.now().getTime() - Date.parse(session.lastSeenAt) > IDLE_TTL) return false;
+    const account = db.account(session.accountId);
+    return !!account && !account.disabled;
+  }
+
+  return { route, db, isSignedIn };
 }
 
 function stripUndefined<T extends Record<string, unknown>>(value: T): { [K in keyof T]: Exclude<T[K], undefined> } {

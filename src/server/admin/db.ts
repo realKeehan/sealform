@@ -103,6 +103,16 @@ CREATE TABLE IF NOT EXISTS audit (
   hash TEXT NOT NULL,
   entry_json TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS site_rules (
+  prefix TEXT PRIMARY KEY,
+  mode TEXT NOT NULL,
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS envelopes (
   id TEXT PRIMARY KEY,
   token_hash TEXT NOT NULL UNIQUE,
@@ -306,6 +316,35 @@ export class AdminStore {
       ? this.db.prepare('SELECT entry_json FROM audit ORDER BY seq DESC LIMIT ?').all(limit)
       : this.db.prepare('SELECT entry_json FROM audit ORDER BY seq').all();
     return (rows as { entry_json: string }[]).map((row) => JSON.parse(row.entry_json) as AuditEntry);
+  }
+
+  // Site layer ----------------------------------------------------------------------------------
+
+  siteRules(): { prefix: string; mode: 'hidden' | 'private'; createdBy: string; createdAt: string }[] {
+    return (this.db.prepare('SELECT * FROM site_rules ORDER BY prefix').all() as Record<string, string>[]).map((row) => ({
+      prefix: row.prefix!,
+      mode: row.mode as 'hidden' | 'private',
+      createdBy: row.created_by!,
+      createdAt: row.created_at!,
+    }));
+  }
+
+  setSiteRule(prefix: string, mode: 'hidden' | 'private', by: string, at: string): void {
+    this.db
+      .prepare('INSERT INTO site_rules (prefix, mode, created_by, created_at) VALUES (?, ?, ?, ?) ON CONFLICT (prefix) DO UPDATE SET mode = excluded.mode, created_by = excluded.created_by, created_at = excluded.created_at')
+      .run(prefix, mode, by, at);
+  }
+
+  deleteSiteRule(prefix: string): boolean {
+    return Number(this.db.prepare('DELETE FROM site_rules WHERE prefix = ?').run(prefix).changes) === 1;
+  }
+
+  setting(key: string): string | undefined {
+    return (this.db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as { value: string } | undefined)?.value;
+  }
+
+  saveSetting(key: string, value: string): void {
+    this.db.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value').run(key, value);
   }
 
   // Envelopes (private contract links) -----------------------------------------------------------

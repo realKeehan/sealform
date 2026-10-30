@@ -446,3 +446,24 @@ test('a bad profile file stops startup with a clear message', async () => {
   await rm(join(dirBad, 'FR.json'));
   await assert.rejects(ProfileRegistry.load(dirBad), /default\.json/);
 });
+
+
+test('a document with an unresolved [TO CONFIRM] marker cannot be published, from disk or by status change', async () => {
+  const docs = join(dir, 'docs-placeholder');
+  await cp(FIXTURES, docs, { recursive: true });
+  const textPath = join(docs, 'example-agreement', 'EXAMPLE-1', 'en.md');
+  await writeFile(textPath, (await readFile(textPath, 'utf8')) + '\nRecords are stored in [TO CONFIRM: country].\n');
+  await assert.rejects(start('placeholder-published', { documentsDir: docs }), /still contains \[TO CONFIRM/);
+
+  const manifestPath = join(docs, 'example-agreement', 'EXAMPLE-1', 'document.json');
+  const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+  manifest.status = 'draft';
+  await writeFile(manifestPath, JSON.stringify(manifest));
+  const app = await start('placeholder-draft', { documentsDir: docs });
+  try {
+    assert.equal(app.sealform.documents.current('example-agreement'), undefined, 'a draft is not offered for signing');
+    assert.throws(() => app.sealform.documents.setStatus('example-agreement', 'EXAMPLE-1', 'published'), /Cannot publish.*TO CONFIRM/);
+  } finally {
+    await app.stop();
+  }
+});

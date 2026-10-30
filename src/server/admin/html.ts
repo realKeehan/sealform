@@ -77,6 +77,7 @@ export function layout(input: LayoutInput): string {
     ${role !== 'reviewer' ? link('/documents', 'Documents', 'documents') : ''}
     ${role !== 'reviewer' ? link('/contracts', 'Contracts', 'contracts') : ''}
     ${role === 'owner' ? link('/accounts', 'Accounts', 'accounts') : ''}
+    ${role === 'owner' ? link('/site', 'Site', 'site') : ''}
     ${link('/sign-ins', 'Sign-ins', 'sign-ins')}
     ${role === 'owner' ? link('/audit', 'Audit log', 'audit') : ''}
     ${link('/account', 'My account', 'account')}

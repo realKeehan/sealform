@@ -37,6 +37,7 @@ import type { Envelope } from './admin/db.ts';
 import { createAdmin } from './admin/index.ts';
 import { renderCertificate } from './pdf.ts';
 import { ProfileRegistry, signerVisible as profileVisible } from './profiles.ts';
+import { SiteLayer, type SiteConfig } from './site.ts';
 import { AdminStore } from './admin/db.ts';
 import { SqliteStore } from './store.ts';
 import { parseSignRequest, ValidationError } from './validate.ts';
@@ -62,6 +63,11 @@ export interface SealformConfig {
    * Pick a path that is not linked anywhere; it is not a secret, only less noise from scanners.
    */
   adminPath?: string;
+  /**
+   * Also serve the built website from a folder, with hidden and private pages and a parking switch
+   * managed from the dashboard. Requests the signing API and dashboard do not handle fall through to it.
+   */
+  site?: SiteConfig;
   /** Folder of jurisdiction profile JSON files. Defaults to the profiles shipped with sealform. */
   profilesDir?: string;
   /**
@@ -134,6 +140,8 @@ export async function createSealform(config: SealformConfig): Promise<Sealform> 
   const profiles = await ProfileRegistry.load(config.profilesDir);
   const store = await SqliteStore.open(config.dataDir);
   const keysUrl = `${origin}/.well-known/sealform-keys.json`;
+  // The dashboard shows site info and the site layer needs the dashboard's database, so one is bound late.
+  let site: SiteLayer | undefined;
   const admin = config.adminPath
     ? await createAdmin({
         base: config.adminPath.replace(/\/+$/, ''),
@@ -145,6 +153,7 @@ export async function createSealform(config: SealformConfig): Promise<Sealform> 
         keySet,
         checks,
         profiles,
+        siteInfo: config.site ? () => site!.info() : undefined,
         signBase: base,
         mailer,
         operator: config.operator,
@@ -182,6 +191,10 @@ export async function createSealform(config: SealformConfig): Promise<Sealform> 
     if (!doc || documents.status(doc) !== 'published') throw new HttpError(410, 'This agreement is no longer open for signing. Ask the sender.');
     return serveDocument(req, res, doc, url, envelope);
   }
+
+  site = config.site
+    ? new SiteLayer(config.site, { db: admin?.db, isAdmin: (req) => admin?.isSignedIn(req) ?? false, operatorName: config.operator.name })
+    : undefined;
 
   async function getDocument(req: IncomingMessage, res: ServerResponse, id: string, url: URL): Promise<void> {
     const doc = documents.current(id);
@@ -428,6 +441,14 @@ export async function createSealform(config: SealformConfig): Promise<Sealform> 
     handled.then((done) => (done ? true : route(req, res))).then(
       (handled) => {
         if (handled) return;
+        if (site) {
+          site.handle(req, res).catch((error: unknown) => {
+            log(`site error: ${error instanceof Error ? error.message : String(error)}`);
+            if (!res.headersSent) res.writeHead(500).end();
+            else res.destroy();
+          });
+          return;
+        }
         if (next) next();
         else sendJson(res, 404, { error: 'Not found' });
       },
@@ -551,6 +572,7 @@ export { DocumentRegistry, type DocumentManifest, type FieldSpec, type ConsentSp
 export { NoBotCheck, RateLimiter, TurnstileCheck, type BotCheck } from './guards.ts';
 export { OutboxMailer, toMime, type Mailer, type MailMessage } from './mailer.ts';
 export { SqliteStore, type RecordSummary } from './store.ts';
+export { SiteLayer, normalizePrefix, DEFAULT_PARKING_ALLOW, type SiteConfig } from './site.ts';
 export { ProfileRegistry, profileHealth, type Profile, type LoadedProfile } from './profiles.ts';
 export { ValidationError } from './validate.ts';
 export { isCountryCode } from '../core/index.ts';

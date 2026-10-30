@@ -949,3 +949,174 @@ test('contract links are for private documents, need an owner or admin, and revi
     await app.stop();
   }
 });
+
+
+// Site layer ----------------------------------------------------------------------------------------
+
+async function makeSite(name: string, withParked = true) {
+  const { mkdir, writeFile } = await import('node:fs/promises');
+  const site = join(dir, `site-${name}`);
+  for (const sub of ['about', 'press/internal', 'assets', 'parked', 'sub']) await mkdir(join(site, sub), { recursive: true });
+  await writeFile(join(site, 'index.html'), '<h1>Home</h1>');
+  await writeFile(join(site, 'about', 'index.html'), '<h1>About</h1>');
+  await writeFile(join(site, 'press', 'internal', 'index.html'), '<h1>Internal</h1>');
+  await writeFile(join(site, 'assets', 'app.js'), 'console.log(1)');
+  await writeFile(join(site, 'sub', 'file.txt'), 'plain');
+  await writeFile(join(site, '404.html'), '<h1>Custom missing</h1>');
+  await writeFile(join(site, '.secret'), 'nope');
+  if (withParked) await writeFile(join(site, 'parked', 'index.html'), '<h1>Be right back</h1>');
+  await writeFile(join(dir, `site-${name}-outside.txt`), 'outside the site folder');
+  return site;
+}
+
+test('the site layer serves the built site safely', async () => {
+  const site = await makeSite('serve');
+  const app = await start('site-serve', { site: { dir: site, headers: { 'x-test': 'yes' } } });
+  try {
+    const get = (path: string, init: RequestInit = {}) => fetch(`${app.url}${path}`, { redirect: 'manual', ...init });
+    const home = await get('/');
+    assert.equal(home.status, 200);
+    assert.equal(await home.text(), '<h1>Home</h1>');
+    assert.equal(home.headers.get('x-test'), 'yes', 'configured headers are added');
+    assert.equal(home.headers.get('cache-control'), 'no-cache');
+    assert.equal(home.headers.get('x-content-type-options'), 'nosniff');
+    assert.equal((await get('/about')).headers.get('location'), '/about/');
+    assert.equal((await get('/about/')).status, 200);
+    const js = await get('/assets/app.js');
+    assert.match(js.headers.get('content-type')!, /javascript/);
+    assert.match(js.headers.get('cache-control')!, /immutable/);
+    assert.equal((await get('/assets/app.js', { headers: { 'if-none-match': js.headers.get('etag')! } })).status, 304);
+    const head = await get('/sub/file.txt', { method: 'HEAD' });
+    assert.equal(head.status, 200);
+    assert.equal(await head.text(), '');
+
+    // The signing API and key set still win over the site.
+    assert.equal((await get('/.well-known/sealform-keys.json')).status, 200);
+    assert.equal((await get('/sealform/api/documents/example-agreement')).status, 200);
+
+    for (const path of ['/../site-serve-outside.txt', '/%2e%2e/site-serve-outside.txt', '/%2e%2e%2fsite-serve-outside.txt', '/sub/..%2f..%2fsite-serve-outside.txt', '/..%5csite-serve-outside.txt', '/.secret', '/.git/config', '/%00', '/missing']) {
+      const response = await get(path);
+      assert.equal(response.status, 404, path);
+      assert.equal((await response.text()).includes('outside the site folder'), false, path);
+    }
+    assert.match(await (await get('/nope')).text(), /Custom missing/);
+    assert.equal((await get('/', { method: 'POST' })).status, 405);
+  } finally {
+    await app.stop();
+  }
+});
+
+test('hidden and private pages are managed from the dashboard and audit-logged', async () => {
+  const site = await makeSite('rules');
+  const app = await start('site-rules', { site: { dir: site } });
+  try {
+    const owner = await ownerSession(app);
+    const csrf = await owner.csrf('/site');
+    const page = (path: string, cookie = '') => fetch(`${app.url}${path}`, { redirect: 'manual', headers: cookie ? { cookie } : {} });
+
+    assert.equal((await page('/press/internal/')).status, 200);
+    await owner.post('/site/rules', { csrf, prefix: '/press/internal/', mode: 'hidden' });
+    assert.equal((await page('/press/internal/')).status, 404, 'hidden for the public');
+    assert.equal((await page('/press/internal/', owner.cookie)).status, 404, 'hidden even for an admin');
+
+    await owner.post('/site/rules', { csrf, prefix: '/about', mode: 'private' });
+    assert.equal((await page('/about/')).status, 404, 'private pages look missing to visitors');
+    assert.equal((await page('/about/', owner.cookie)).status, 200, 'but open for a signed-in admin');
+    assert.equal((await page('/about/', 'sf_admin=forged')).status, 404);
+
+    // Changing a rule replaces it, and removing it opens the page again.
+    await owner.post('/site/rules', { csrf, prefix: '/about/', mode: 'hidden' });
+    assert.equal((await page('/about/', owner.cookie)).status, 404);
+    await owner.post('/site/rules/delete', { csrf, prefix: '/about/' });
+    assert.equal((await page('/about/')).status, 200);
+
+    // Unsafe or pointless rules are refused.
+    for (const prefix of ['/', 'about', '/../x', '/a//b', '/.git/']) {
+      const refused = await owner.post('/site/rules', { csrf, prefix, mode: 'hidden' });
+      assert.equal(refused.status, 200);
+      assert.match(refused.text, /Enter a path such as/, prefix);
+    }
+    assert.deepEqual(app.admin.siteRules().map((r) => r.prefix), ['/press/internal'], 'stored in one canonical form');
+
+    const actions = app.admin.auditEntries().map((e) => e.action).filter((a) => a.startsWith('site.'));
+    assert.deepEqual(actions, ['site.rule.set', 'site.rule.set', 'site.rule.set', 'site.rule.delete']);
+    assert.equal((await verifyChain(app.admin.auditEntries(), keyset)).ok, true);
+
+    // Only owners manage the site.
+    const rae = app.admin.createAccount({ email: 'rae@example.com', name: 'Rae', role: 'admin', passwordHash: await hashPassword(PASSWORD), mustChangePassword: false, now: new Date(clock).toISOString() });
+    assert.ok(rae);
+    const raeBrowser = new Browser(app);
+    await raeBrowser.login('rae@example.com');
+    assert.equal((await raeBrowser.get('/site')).status, 403);
+    assert.equal((await raeBrowser.post('/site/parking', { csrf, parking: 'on' })).status, 403);
+  } finally {
+    await app.stop();
+  }
+});
+
+test('parking holds the whole site behind a back-soon page while the signing API and dashboard keep working', async () => {
+  const site = await makeSite('park');
+  const app = await start('site-park', { site: { dir: site } });
+  try {
+    const owner = await ownerSession(app);
+    const csrf = await owner.csrf('/site');
+    const get = (path: string) => fetch(`${app.url}${path}`, { redirect: 'manual' });
+    assert.equal((await get('/')).status, 200);
+
+    assert.equal((await owner.post('/site/parking', { csrf, parking: 'on' })).location, `${BASE}/site?m=saved`);
+    const parked = await get('/');
+    assert.equal(parked.status, 503);
+    assert.equal(parked.headers.get('retry-after'), '3600');
+    assert.match(await parked.text(), /Be right back/);
+    assert.equal((await get('/about/')).status, 503);
+    assert.equal((await get('/anything/at/all')).status, 503, 'unknown pages are parked too, not 404');
+    assert.equal((await get('/assets/app.js')).status, 200, 'the parked page can load its assets');
+    assert.equal((await get('/parked/')).status, 200);
+    assert.equal((await get('/sealform/api/documents/example-agreement')).status, 200, 'signing keeps working');
+    assert.equal((await get('/.well-known/sealform-keys.json')).status, 200);
+    assert.equal((await owner.get('/site')).status, 200, 'so does the dashboard');
+    assert.match((await owner.get('/site')).text, /The site is <strong>parked<\/strong>/);
+
+    await owner.post('/site/parking', { csrf, parking: 'off' });
+    assert.equal((await get('/')).status, 200);
+    assert.deepEqual(app.admin.auditEntries().map((e) => e.action).filter((a) => a.startsWith('site.')), ['site.park', 'site.open']);
+  } finally {
+    await app.stop();
+  }
+
+  // With no parked page of its own, a plain built-in page is used.
+  const bare = await makeSite('park-bare', false);
+  const second = await start('site-park-bare', { site: { dir: bare } });
+  try {
+    const owner = await ownerSession(second);
+    await owner.post('/site/parking', { csrf: await owner.csrf('/site'), parking: 'on' });
+    const page = await fetch(`${second.url}/`);
+    assert.equal(page.status, 503);
+    assert.match(await page.text(), /Example Studio is not open right now/);
+  } finally {
+    await second.stop();
+  }
+});
+
+test('a site with no dashboard still serves, and the Site page explains when there is no site', async () => {
+  const site = await makeSite('plain');
+  const sealform = await createSealform({ dataDir: join(dir, 'site-plain'), documentsDir: FIXTURES, sealingKey: privateFile, keySet: keyset, publicOrigin: ORIGIN, operator: { name: 'E', email: 'e@example.com' }, site: { dir: site }, log: () => {} });
+  const server = createServer(sealform.handler);
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const url = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  try {
+    assert.equal((await fetch(`${url}/`)).status, 200);
+    assert.equal((await fetch(`${url}/press/internal/`)).status, 200, 'no rules without a dashboard');
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    sealform.close();
+  }
+  const app = await start('site-none');
+  try {
+    const owner = await ownerSession(app);
+    assert.match((await owner.get('/site')).text, /not serving the website/);
+    assert.equal((await owner.post('/site/parking', { csrf: await owner.csrf('/site'), parking: 'on' })).status, 404);
+  } finally {
+    await app.stop();
+  }
+});

@@ -300,7 +300,7 @@ Each phase ends with the diff and a stop.
 4. Admin: auth, TOTP, roles, sign-ins, audit log, documents, submissions. Done.
 5. Jurisdiction profiles: format, default profile, the nine sourced profiles, form behaviour. Done, with the limits below.
 6. Admin: envelopes and private links, countersignature with the profile review. Done. Countersigning is a sealed audit-log entry, not a drawn signature.
-7. Site layer: page visibility, parking mode, site info.
+7. Site layer: page visibility, parking mode, site info. Done.
 8. Plinkwick "form disabled" switch and parking page (can run any time).
 9. At the move: v3 legal text, Plinkwick integration, cPanel deploy.
 

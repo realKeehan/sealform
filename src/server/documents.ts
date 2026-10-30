@@ -65,6 +65,13 @@ const ID = /^[a-z0-9][a-z0-9._-]{0,63}$/i;
 const LANG = /^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$/;
 const DURATION = /^P(?!$)(\d+Y)?(\d+M)?(\d+W)?(\d+D)?$/;
 
+/** Draft text marks facts still to be filled in as [TO CONFIRM: ...]. Such a document must not be signed. */
+export const PLACEHOLDER = '[TO CONFIRM';
+
+export function hasPlaceholder(doc: LoadedDocument): boolean {
+  return [...doc.texts.values()].some((text) => text.text.includes(PLACEHOLDER));
+}
+
 export class DocumentRegistry {
   private readonly versions = new Map<string, Map<string, LoadedDocument>>();
   /** Status set from the admin dashboard; it overrides the status in document.json. */
@@ -117,6 +124,7 @@ export class DocumentRegistry {
     const doc = this.get(id, version);
     if (!doc) throw new Error(`No document ${id}@${version}`);
     if (status === 'published') {
+      if (hasPlaceholder(doc)) throw new Error(`Cannot publish: the text still contains ${PLACEHOLDER}: ...] for something to fill in`);
       for (const kind of doc.manifest.requiredChecks) {
         if (!this.checks.get(kind)?.enabled) throw new Error(`Cannot publish: check "${kind}" is not configured`);
       }
@@ -165,7 +173,9 @@ async function loadVersion(dir: string, checks: Map<string, Check>): Promise<Loa
     const text = (await readFile(join(dir, `${lang}.md`), 'utf8')).replace(/\r\n?/g, '\n');
     texts.set(lang, { lang, text, sha256: await sha256Hex(text) });
   }
-  return { manifest, manifestSha256: await sha256Canonical(signerVisible(manifest)), texts };
+  const loaded = { manifest, manifestSha256: await sha256Canonical(signerVisible(manifest)), texts };
+  if (manifest.status === 'published' && hasPlaceholder(loaded)) throw new Error(`${dir}: published text still contains ${PLACEHOLDER}: ...] for something to fill in`);
+  return loaded;
 }
 
 /**

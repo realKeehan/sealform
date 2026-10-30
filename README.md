@@ -7,10 +7,10 @@ the record since. Anyone can check it with nothing but the record and your publi
 Built for small operators who need waivers, tester agreements and contracts without a per-envelope
 bill: one Node.js app, no external database, no vendor holding your records.
 
-> **Status: early.** The core (hashing, sealing, verification), the command line, the signing
-> server, the embeddable form, the admin dashboard, jurisdiction profiles and private contract links
-> are done and tested. Site controls (hiding pages, parking mode) are next. See the
-> [roadmap](#roadmap).
+> **Status: early.** Everything on the [roadmap](#roadmap) except real-world deployment is built and
+> tested: the core, the command line, the signing server, the embeddable form, the admin dashboard,
+> jurisdiction profiles, private contract links and the site layer. It has not been deployed or used
+> for real signatures yet, and the jurisdiction profiles have not been reviewed by a lawyer.
 
 ## How a signature becomes evidence
 
@@ -168,6 +168,34 @@ Countersigning is a sealed entry in the audit log naming the account, the signer
 final hash of the whole agreement, and it emails the signer a confirmation. It is a decision recorded
 under your account, not a drawn signature.
 
+### Serving the website too
+
+On a host where one Node app serves everything (the usual cPanel setup), give sealform the built site
+and it serves it, with two controls a static host does not have:
+
+```js
+const sealform = await createSealform({
+  /* ... */
+  adminPath: '/_sf',
+  site: { dir: '/home/you/site/dist', headers: { 'content-security-policy': "default-src 'self'" } },
+});
+```
+
+- **Hidden and private pages.** In the dashboard's **Site** page (owners), add a path. *Hidden* answers
+  404 to everyone; *private* answers 404 unless you are signed in to the dashboard. A path covers
+  everything under it, and `/about` and `/about/` are one rule.
+- **Parking.** One switch holds the whole site behind your `parked/index.html` (or a plain built-in
+  page) with HTTP 503 and `Retry-After`, except `/parked/`, `/assets/`, `/.well-known/`,
+  `/favicon.ico`, `/robots.txt` and any `parkingAllow` paths you add. The signing form, contract links
+  and the dashboard are not part of the site and keep working while it is parked.
+- **Site info.** Last build time, whether the parked and 404 pages exist, the record count and chain
+  head, the sealing and published keys, and which checks are not configured.
+
+Static serving refuses dotfiles, `..` in any encoding, and symlinks that leave the folder; it sets
+`nosniff`, ETags and cache headers. Rules and the parking switch live in the database and every change
+is in the audit log. Private pages recognise the dashboard session cookie, which is why that cookie is
+scoped to the whole host (it stays HttpOnly and SameSite=Strict).
+
 ### The admin dashboard
 
 Set `adminPath` to turn it on, and pick a path that nothing links to:
@@ -212,6 +240,7 @@ npx sealform admin create --data /home/you/sealform-data   --key /home/you/keys/
 | Submissions | everyone | Search and filter, per-record view with the signature, answers and all captured evidence, per-record verification, PDF and record downloads, application status |
 | Documents | owner, admin | Versions, languages, hashes, publish and close (publishing closes the previous version) |
 | Contracts | owner, admin | Private signing links: create, cancel, countersign, and the country check |
+| Site | owner | Parking switch, hidden and private page rules, site info (when `site` is set) |
 | Accounts | owner | Create accounts with a temporary password, change roles, disable, reset |
 | Sign-ins | everyone (owners see all) | Every attempt with IP and browser, successful or not |
 | Audit log | owner | Every dashboard change, hash-chained and sealed like records, exportable and checkable with `sealform verify-chain` |
@@ -249,7 +278,7 @@ link, hash and seal, so the chain still verifies while the personal data is gone
 | Admin dashboard: accounts, two-factor sign-in, sign-in history, sealed audit log, documents, submissions | done |
 | Jurisdiction profiles: nine countries plus a default, notices, required fields, excluded document types, hash in the record (not lawyer-reviewed) | done |
 | Private signing links for contracts, with countersignature | done |
-| Site controls: hide pages, parking mode | planned |
+| Site layer: serve the built site, hidden and private pages, parking mode, site info | done |
 | Optional checks: email one-time code, SMS, passkeys, ID verification, qualified signatures, RFC 3161 timestamps, signed PDFs | designed, off by default |
 
 The full design is in [docs/DESIGN.md](docs/DESIGN.md).
