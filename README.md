@@ -140,6 +140,25 @@ Set `adminPath` to turn it on, and pick a path that nothing links to:
 const sealform = await createSealform({ /* ... */ adminPath: '/_sf' });
 ```
 
+To put Turnstile on the sign-in page, give the dashboard your public site key. The secret is the same
+one the public form uses. With Turnstile as the bot check, the dashboard refuses to start without the
+key, so it is never left unprotected by accident:
+
+```js
+const sealform = await createSealform({
+  /* ... */
+  adminPath: '/_sf',
+  botCheck: new TurnstileCheck(process.env.TURNSTILE_SECRET),
+  adminTurnstileSiteKey: '0x4AAA...',
+});
+```
+
+The check runs before any account lookup or password work, so a bot learns nothing and cannot lock
+the real account by hammering it. Only the sign-in page loads Cloudflare's script; every other
+dashboard page keeps a policy that forbids scripts. To try it locally without an account, run the demo
+with Cloudflare's test keys: `TURNSTILE_SITE_KEY=1x00000000000000000000AA
+TURNSTILE_SECRET=1x0000000000000000000000000000000AA npm run demo`.
+
 Create the first owner from the command line. The temporary password is printed once:
 
 ```bash

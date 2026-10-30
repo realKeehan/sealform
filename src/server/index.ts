@@ -57,6 +57,12 @@ export interface SealformConfig {
    * Pick a path that is not linked anywhere; it is not a secret, only less noise from scanners.
    */
   adminPath?: string;
+  /**
+   * Public Turnstile site key for the dashboard sign-in page. Required when the dashboard is on and
+   * `botCheck` is a TurnstileCheck, so the dashboard is never left unprotected by accident. Uses the
+   * same secret as the public form.
+   */
+  adminTurnstileSiteKey?: string;
   botCheck?: BotCheck;
   mailer?: Mailer;
   checks?: Map<string, Check>;
@@ -85,6 +91,13 @@ export async function createSealform(config: SealformConfig): Promise<Sealform> 
   const log = config.log ?? ((message: string) => console.error(`[sealform] ${message}`));
   const checks = config.checks ?? defaultChecks();
   const botCheck = config.botCheck ?? new NoBotCheck();
+  // Validate configuration before opening anything, so a bad config does not leave the database open.
+  if (config.adminPath && botCheck.name === 'turnstile' && !config.adminTurnstileSiteKey) {
+    throw new Error('adminTurnstileSiteKey is required when the dashboard is on and botCheck is Turnstile');
+  }
+  if (config.adminTurnstileSiteKey && botCheck.name !== 'turnstile') {
+    throw new Error('adminTurnstileSiteKey is set but botCheck is not a TurnstileCheck, so the widget could never be verified');
+  }
   const mailer = config.mailer ?? new OutboxMailer(join(config.dataDir, 'outbox'));
   const ipSource = config.clientIp ?? 'socket';
   const windowMs = config.limits?.windowMs ?? 10 * 60_000;
@@ -113,6 +126,8 @@ export async function createSealform(config: SealformConfig): Promise<Sealform> 
         sealingKey,
         keySet,
         checks,
+        botCheck,
+        turnstileSiteKey: config.adminTurnstileSiteKey,
         now,
         log,
       })

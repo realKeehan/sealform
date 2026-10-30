@@ -520,3 +520,80 @@ test('the signing API still works beside the dashboard, and unknown dashboard pa
     await app.stop();
   }
 });
+
+class StubBotCheck {
+  readonly name = 'turnstile';
+  seen: (string | undefined)[] = [];
+  verify(token: string | undefined): Promise<boolean> {
+    this.seen.push(token);
+    return Promise.resolve(token === 'good-token');
+  }
+}
+
+test('with Turnstile on, the sign-in page loads the widget and a bot never reaches the password check', async () => {
+  const bot = new StubBotCheck();
+  const sealform = await createSealform({
+    dataDir: join(dir, 'turnstile'),
+    documentsDir: FIXTURES,
+    sealingKey: privateFile,
+    keySet: keyset,
+    publicOrigin: ORIGIN,
+    operator: { name: 'Example Studio', email: 'legal@example.com' },
+    adminPath: BASE,
+    botCheck: bot,
+    adminTurnstileSiteKey: '1x00000000000000000000AA',
+    log: () => {},
+    now: () => new Date(clock),
+  });
+  const server = createServer(sealform.handler);
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const url = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  const admin = sealform.admin!;
+  admin.createAccount({ email: 'owner@example.com', name: 'Olive', role: 'owner', passwordHash: await hashPassword(PASSWORD), mustChangePassword: false, now: new Date(clock).toISOString() });
+  const app = { sealform, admin, url, owner: admin.accountByEmail('owner@example.com')!, stop: async () => {} } as unknown as App;
+  try {
+    const browser = new Browser(app);
+    const page = await browser.get('/login');
+    assert.match(page.text, /class="cf-turnstile" data-sitekey="1x00000000000000000000AA"/);
+    assert.match(page.text, /challenges\.cloudflare\.com\/turnstile\/v0\/api\.js/);
+    const csp = page.headers.get('content-security-policy')!;
+    assert.match(csp, /script-src https:\/\/challenges\.cloudflare\.com/);
+    assert.match(csp, /frame-src https:\/\/challenges\.cloudflare\.com/);
+
+    // Other dashboard pages keep the strict policy with no script source at all.
+    const twoFa = await browser.get('/login/2fa');
+    assert.equal((twoFa.headers.get('content-security-policy') ?? '').includes('script-src'), false);
+
+    // No token, or a bad one: refused before the password is looked at, and logged.
+    const missing = await browser.post('/login', { email: 'owner@example.com', password: PASSWORD });
+    assert.equal(missing.status, 403);
+    assert.match(missing.text, /bot check did not pass/);
+    const bad = await browser.post('/login', { email: 'owner@example.com', password: PASSWORD, 'cf-turnstile-response': 'bad-token' });
+    assert.equal(bad.status, 403);
+    assert.equal(browser.cookie, '', 'no session was issued');
+
+    // Bots cannot lock the real account by hammering it.
+    for (let i = 0; i < 8; i++) await browser.post('/login', { email: 'owner@example.com', password: 'wrong wrong wrong', 'cf-turnstile-response': 'bad-token' });
+    assert.equal(admin.account(app.owner.id)!.failedLogins, 0);
+    assert.equal(admin.signIns(null).every((row) => row.result === 'bot-check-failed'), true);
+
+    // A passing token reaches the normal password check.
+    const wrongPassword = await browser.post('/login', { email: 'owner@example.com', password: 'wrong wrong wrong', 'cf-turnstile-response': 'good-token' });
+    assert.equal(wrongPassword.status, 401);
+    const ok = await browser.post('/login', { email: 'owner@example.com', password: PASSWORD, 'cf-turnstile-response': 'good-token' });
+    assert.equal(ok.status, 303);
+    assert.ok(bot.seen.includes('good-token'));
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    sealform.close();
+  }
+});
+
+test('Turnstile settings that would leave the dashboard unprotected or unverifiable are refused at startup', async () => {
+  const base = { documentsDir: FIXTURES, sealingKey: privateFile, keySet: keyset, publicOrigin: ORIGIN, operator: { name: 'E', email: 'e@example.com' }, log: () => {} };
+  const { TurnstileCheck } = await import('../src/server/index.ts');
+  await assert.rejects(createSealform({ ...base, dataDir: join(dir, 'ts-a'), adminPath: BASE, botCheck: new TurnstileCheck('secret') }), /adminTurnstileSiteKey is required/);
+  await assert.rejects(createSealform({ ...base, dataDir: join(dir, 'ts-b'), adminPath: BASE, adminTurnstileSiteKey: 'key' }), /botCheck is not a TurnstileCheck/);
+  const ok = await createSealform({ ...base, dataDir: join(dir, 'ts-c'), adminPath: BASE, botCheck: new TurnstileCheck('secret'), adminTurnstileSiteKey: 'key' });
+  ok.close();
+});

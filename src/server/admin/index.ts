@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { verifyChain, verifyEntry, type ChainEntry, type JsonValue, type KeySet, type SealformRecord, type SealingKey } from '../../core/index.ts';
 import type { Check } from '../checks.ts';
 import type { DocumentRegistry, DocumentStatus, LoadedDocument } from '../documents.ts';
-import { RateLimiter } from '../guards.ts';
+import { RateLimiter, type BotCheck } from '../guards.ts';
 import { header, HttpError } from '../http.ts';
 import type { SqliteStore } from '../store.ts';
 import {
@@ -36,6 +36,10 @@ export interface AdminOptions {
   sealingKey: SealingKey;
   keySet: KeySet;
   checks: Map<string, Check>;
+  /** Checked on the sign-in form before any password work, so bots cannot probe or lock accounts. */
+  botCheck: BotCheck;
+  /** Public Turnstile site key; the widget is shown on the sign-in page when set. */
+  turnstileSiteKey: string | undefined;
   now: () => Date;
   log: (message: string) => void;
 }
@@ -64,6 +68,8 @@ type Ctx = {
   url: URL;
   path: string;
   ip: string;
+  /** Set by the sign-in page, which alone is allowed to load the Turnstile script. */
+  turnstile?: boolean;
   account?: Account;
   session?: AdminSession;
 };
@@ -95,6 +101,12 @@ export async function createAdmin(options: AdminOptions) {
     'x-robots-tag': 'noindex, nofollow',
   };
 
+  const TURNSTILE_ORIGIN = 'https://challenges.cloudflare.com';
+  const turnstileHeaders = {
+    ...securityHeaders,
+    'content-security-policy': `${securityHeaders['content-security-policy']}; script-src ${TURNSTILE_ORIGIN}; frame-src ${TURNSTILE_ORIGIN}; connect-src ${TURNSTILE_ORIGIN}`,
+  };
+
   function page(ctx: Ctx, title: string, nav: string, body: Raw, status = 200): void {
     const flash = MESSAGES[ctx.url.searchParams.get('m') ?? ''];
     const text = layout({
@@ -108,7 +120,7 @@ export async function createAdmin(options: AdminOptions) {
       ...(ctx.account && ctx.session?.stage === 'active' ? { user: { email: ctx.account.email, role: ctx.account.role } } : {}),
       ...(ctx.session?.stage === 'active' ? { csrf: ctx.session.csrf } : {}),
     });
-    ctx.res.writeHead(status, { ...securityHeaders, 'content-type': 'text/html; charset=utf-8' });
+    ctx.res.writeHead(status, { ...(ctx.turnstile ? turnstileHeaders : securityHeaders), 'content-type': 'text/html; charset=utf-8' });
     ctx.res.end(text);
   }
 
@@ -199,6 +211,7 @@ export async function createAdmin(options: AdminOptions) {
   // Login ----------------------------------------------------------------------------------------
 
   function loginPage(ctx: Ctx, error?: string, status = 200): void {
+    if (options.turnstileSiteKey) ctx.turnstile = true;
     page(
       ctx,
       'Sign in',
@@ -209,6 +222,11 @@ export async function createAdmin(options: AdminOptions) {
         <form method="post" action="${base}/login" class="stack">
           <label>Email <input type="email" name="email" autocomplete="username" required></label>
           <label>Password <input type="password" name="password" autocomplete="current-password" required></label>
+          ${options.turnstileSiteKey
+            ? html`<div class="cf-turnstile" data-sitekey="${options.turnstileSiteKey}"></div>
+              <script src="${TURNSTILE_ORIGIN}/turnstile/v0/api.js" async defer></script>
+              <noscript><p class="flash flash--error">Signing in needs JavaScript for the bot check.</p></noscript>`
+            : ''}
           <button type="submit">Sign in</button>
         </form>
       </section>`,
@@ -222,6 +240,11 @@ export async function createAdmin(options: AdminOptions) {
     checkPost(ctx, form);
     const email = (form.get('email') ?? '').trim().toLowerCase().slice(0, 254);
     const password = form.get('password') ?? '';
+    // Before any account lookup or password hashing: a bot learns nothing and cannot cause a lockout.
+    if (options.turnstileSiteKey && !(await options.botCheck.verify(form.get('cf-turnstile-response') ?? undefined, ctx.ip))) {
+      db.logSignIn({ at: nowIso(), accountId: null, email, ip: ctx.ip, userAgent: header(ctx.req, 'user-agent'), result: 'bot-check-failed' });
+      return loginPage(ctx, 'The bot check did not pass. Please try again.', 403);
+    }
     const account = db.accountByEmail(email);
     const log = (result: string) => db.logSignIn({ at: nowIso(), accountId: account?.id ?? null, email, ip: ctx.ip, userAgent: header(ctx.req, 'user-agent'), result });
     const generic = 'That email and password do not match an account.';
