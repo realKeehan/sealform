@@ -47,6 +47,8 @@ export interface DocumentManifest {
   retention: { signed: string; unsigned: string };
   /** Only listed in the public API when true. Contract documents use private links instead. */
   public: boolean;
+  /** Studio parties whose own drawn signatures are required for a private contract. */
+  requiredCounterSigners?: string[];
 }
 
 export interface LoadedText {
@@ -184,7 +186,7 @@ async function loadVersion(dir: string, checks: Map<string, Check>): Promise<Loa
  */
 export function signerVisible(manifest: DocumentManifest) {
   const { id, version, title, category, languages, governingLang, disclosure, fields, consents } = manifest;
-  return { id, version, title, category, languages, governingLang, disclosure, fields, consents };
+  return { id, version, title, category, languages, governingLang, disclosure, fields, consents, ...(manifest.requiredCounterSigners ? { requiredCounterSigners: manifest.requiredCounterSigners } : {}) };
 }
 
 function validateManifest(value: unknown, where: string): DocumentManifest {
@@ -204,6 +206,8 @@ function validateManifest(value: unknown, where: string): DocumentManifest {
   if (!Array.isArray(m.consents)) fail('consents must be an array');
   if (!Array.isArray(m.requiredChecks)) fail('requiredChecks must be an array');
   if (typeof m.public !== 'boolean') fail('public must be true or false');
+  if (m.requiredCounterSigners !== undefined && (!Array.isArray(m.requiredCounterSigners) || m.requiredCounterSigners.length < 1 || m.requiredCounterSigners.length > 2 || !m.requiredCounterSigners.every((name) => typeof name === 'string' && name.trim().length > 0 && name.length <= 200) || new Set(m.requiredCounterSigners.map((name) => name.normalize('NFC').trim().toLowerCase())).size !== m.requiredCounterSigners.length)) fail('requiredCounterSigners must name one or two distinct Studio signers');
+  if (m.requiredCounterSigners?.length && m.public) fail('requiredCounterSigners are for private contracts only');
   if (!m.retention || !DURATION.test(m.retention.signed ?? '') || !DURATION.test(m.retention.unsigned ?? '')) fail('retention.signed and retention.unsigned must be ISO 8601 durations such as P4Y');
 
   const names = new Set<string>();

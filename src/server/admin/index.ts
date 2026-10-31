@@ -6,7 +6,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { COUNTRY_CODES, isCountryCode, sha256Canonical, verifyChain, verifyEntry, type ChainEntry, type JsonValue, type KeySet, type SealformRecord, type SealingKey } from '../../core/index.ts';
+import { COUNTRY_CODES, isCountryCode, verifyChain, verifyEntry, type ChainEntry, type JsonValue, type KeySet, type SealformRecord, type SealingKey } from '../../core/index.ts';
 import type { Check } from '../checks.ts';
 import { hasPlaceholder, type DocumentRegistry, type DocumentStatus, type LoadedDocument } from '../documents.ts';
 import { RateLimiter, type BotCheck } from '../guards.ts';
@@ -46,6 +46,7 @@ export interface AdminOptions {
   operatorProfile: LoadedProfile | undefined;
   /** Set when sealform also serves the website; the Site page manages it. */
   siteInfo: (() => ReturnType<SiteLayer['info']>) | undefined;
+  siteParking: ((on: boolean) => Promise<void>) | undefined;
   /** Where the public signing API is mounted, used to build private signing links. */
   signBase: string;
   mailer: Mailer;
@@ -697,6 +698,7 @@ export async function createAdmin(options: AdminOptions) {
       'Site',
       'site',
       html`<h1>Site</h1>
+      ${info?.publicUrl ? html`<p>Managing <a href="${info.publicUrl}">${info.publicUrl}</a>.</p>` : ''}
       ${error ? html`<p class="flash flash--error" role="alert">${error}</p>` : ''}
       ${info
         ? html`<section class="card">
@@ -705,7 +707,7 @@ export async function createAdmin(options: AdminOptions) {
         <form method="post" action="${base}/site/parking" class="inline">${csrf}<input type="hidden" name="parking" value="${parked ? 'off' : 'on'}"><button type="submit">${parked ? 'Open the site' : 'Park the site'}</button></form>
         <p class="muted">Stays reachable while parked: ${info.allow.map((p) => html`<code>${p}</code> `)}. The signing form, contract links and this dashboard are not part of the site and keep working. The parked page is <code>parked/index.html</code> in the site folder${info.hasParkedPage ? '' : ' (not found, so a plain built-in page is shown)'}.</p>
       </section>
-      <section class="card">
+      ${info.serving ? html`<section class="card">
         <h2>Hidden and private pages</h2>
         <p class="muted">A path covers everything under it. <strong>Hidden</strong> answers 404 to everyone. <strong>Private</strong> answers 404 unless you are signed in to this dashboard. The longest matching path wins.</p>
         ${db.siteRules().length === 0 ? html`<p class="muted">No rules yet. Every page of the site is public.</p>` : ''}
@@ -719,7 +721,7 @@ export async function createAdmin(options: AdminOptions) {
           <label>Mode <select name="mode"><option>hidden</option><option>private</option></select></label>
           <button type="submit">Add or change a rule</button>
         </form>
-      </section>
+      </section>` : html`<p class="muted">The main site is served by the static host. This dashboard controls its parking switch; page privacy rules are not available for that host.</p>`}
       <section class="card">
         <h2>Site info</h2>
         <dl class="facts">
@@ -743,15 +745,17 @@ export async function createAdmin(options: AdminOptions) {
     checkPost(ctx, form);
     if (action === 'parking') {
       const on = form.get('parking') === 'on';
-      db.saveSetting('parking', on ? 'on' : 'off');
+      await options.siteParking!(on);
       await audit(ctx, on ? 'site.park' : 'site.open', 'site');
     } else if (action === 'rules') {
+      if (!(await options.siteInfo()).serving) throw new HttpError(409, 'Page visibility rules require the site to be served by sealform');
       const prefix = normalizePrefix(form.get('prefix') ?? '');
       const mode = form.get('mode');
       if (!prefix || prefix === '/' || (mode !== 'hidden' && mode !== 'private')) return sitePage(ctx, 'Enter a path such as /press/internal/ and choose hidden or private. The whole site (/) cannot be hidden here; use parking.');
       db.setSiteRule(prefix, mode, ctx.account!.email, nowIso());
       await audit(ctx, 'site.rule.set', prefix, { mode });
     } else if (action === 'rules/delete') {
+      if (!(await options.siteInfo()).serving) throw new HttpError(409, 'Page visibility rules require the site to be served by sealform');
       const prefix = normalizePrefix(form.get('prefix') ?? '');
       if (!prefix || !db.deleteSiteRule(prefix)) throw new HttpError(404, 'No such rule');
       await audit(ctx, 'site.rule.delete', prefix);
@@ -768,6 +772,33 @@ export async function createAdmin(options: AdminOptions) {
 
   function envelopeState(env: Envelope): string {
     return (env.status === 'open' || env.status === 'signing') && env.expiresAt < nowIso() ? 'expired' : env.status;
+  }
+
+  function studioSignerFields(ctx: Ctx): Raw {
+    return html`<p class="muted">When Studio signatures are required, confirm each person's signing name and email. If the document names two Studio parties, both must be included. Each person draws their own signature through a separate link.</p>
+      ${[1, 2].map((i) => html`<fieldset><legend>Studio signer ${i}${i === 2 ? ' (optional unless required by the document)' : ''}</legend>
+      <label>Signing name <input name="counter${i}Name" maxlength="200" value="${i === 1 ? ctx.account!.name : ''}"></label>
+      <label>Email <input type="email" name="counter${i}Email" maxlength="254" value="${i === 1 ? ctx.account!.email : ''}"></label>
+      <label>Country <select name="counter${i}Country"><option value="">Not sure yet</option>${COUNTRY_CODES.map((code) => html`<option value="${code}">${countryNames.of(code) ?? code}</option>`)}</select></label></fieldset>`)} `;
+  }
+
+  function readStudioSigners(ctx: Ctx, form: URLSearchParams, doc: LoadedDocument): { name: string; email: string; country: string | null }[] {
+    const signers: { name: string; email: string; country: string | null }[] = [];
+    for (const i of [1, 2]) {
+      const name = (form.get(`counter${i}Name`) ?? (i === 1 ? ctx.account!.name : '')).trim();
+      const email = (form.get(`counter${i}Email`) ?? (i === 1 ? ctx.account!.email : '')).trim().toLowerCase();
+      const country = (form.get(`counter${i}Country`) ?? '').trim();
+      if (i === 2 && !name && !email && !country) continue;
+      if (!name || name.length > 200 || !/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(email) || email.length > 254 || (country && !isCountryCode(country))) throw new HttpError(400, 'Each Studio signer needs a name, valid email and a valid country if provided');
+      if (signers.some((s) => s.email === email)) throw new HttpError(400, 'Each Studio signer must use their own email');
+      if (country) {
+        const needs = options.profiles.resolve(country).loaded.profile.formRequirements.find((r) => r.category === doc.manifest.category);
+        if (needs) throw new HttpError(409, `This Studio signer needs ${needs.requires} in ${country}, not this signing method`);
+      }
+      signers.push({ name, email, country: country || null });
+    }
+    for (const required of doc.manifest.requiredCounterSigners ?? []) if (!signers.some((s) => s.name.normalize('NFC').toLowerCase() === required.normalize('NFC').toLowerCase())) throw new HttpError(400, `This document requires the Studio signature of ${required}`);
+    return signers;
   }
 
   function contractsPage(ctx: Ctx, extra?: { created?: { link: string; label: string; email: string }; error?: string }, status = 200): void {
@@ -801,13 +832,14 @@ export async function createAdmin(options: AdminOptions) {
         <h2>New contract link</h2>
         ${docs.length
           ? html`<form method="post" action="${base}/contracts" class="stack narrow">${csrf}
-          <label>Document <select name="document" required>${docs.map((d) => html`<option value="${d.manifest.id}@${d.manifest.version}">${d.manifest.title} (${d.manifest.version})</option>`)}</select></label>
+          <label>Document <select name="document" required>${docs.map((d) => html`<option value="${d.manifest.id}@${d.manifest.version}">${d.manifest.title} (${d.manifest.version})${d.manifest.requiredCounterSigners?.length ? `; Studio signers required: ${d.manifest.requiredCounterSigners.join(', ')}` : ''}</option>`)}</select></label>
           <label>Label for your records <input name="label" required maxlength="120"></label>
           <label>Signer's full legal name <input name="name" required maxlength="200"></label>
           <label>Signer's email <input type="email" name="email" required maxlength="254"></label>
           <label>Signer's country, to check the rules there <select name="country"><option value="">Not sure yet</option>${COUNTRY_CODES.map((code) => html`<option value="${code}">${countryNames.of(code) ?? code}</option>`)}</select></label>
           <label>Link expires in <select name="days">${EXPIRY_DAYS.map((d) => html`<option value="${d}" ${d === 14 ? raw('selected') : ''}>${d} days</option>`)}</select></label>
-          <label class="check"><input type="checkbox" name="counter" value="1"> I will countersign after they sign</label>
+          <label class="check"><input type="checkbox" name="counter" value="1"> Require drawn Studio signatures after the recipient signs</label>
+          ${studioSignerFields(ctx)}
           <label>Reason, only if the country check below blocks this <input name="override" maxlength="300"></label>
           <button type="submit">Create the link</button>
         </form>`
@@ -847,6 +879,10 @@ export async function createAdmin(options: AdminOptions) {
         return contractsPage(ctx, { error: `In ${loaded.profile.name}, a ${doc.manifest.category} document needs ${needs.requires}, not a simple electronic signature. ${needs.note} Enter a reason to send it anyway.` }, 409);
       }
     }
+    const requiresCounter = form.get('counter') === '1';
+    if (doc.manifest.requiredCounterSigners?.length && !requiresCounter) throw new HttpError(400, 'This document requires signatures from its named Studio parties');
+    const studioSigners = requiresCounter ? readStudioSigners(ctx, form, doc) : [];
+    if (studioSigners.some((s) => s.email === email)) throw new HttpError(400, 'The recipient and Studio signers must use different emails');
     const token = newToken();
     const created = options.now();
     const env = db.createEnvelope({
@@ -863,20 +899,25 @@ export async function createAdmin(options: AdminOptions) {
       expiresAt: new Date(created.getTime() + days * 86_400_000).toISOString(),
       overrideReason: override || null,
     });
+    if (studioSigners.length) db.configureCounterSigners(env.id, studioSigners);
     await audit(ctx, 'envelope.create', env.id, { document: `${doc.manifest.id}@${doc.manifest.version}`, signer: email, expiresAt: env.expiresAt, countersign: env.counterRequired, country: country || null, operatorProfile: options.operatorProfile?.profile.id ?? null, override: override || null });
     contractsPage(ctx, { created: { link: `${options.origin}${options.signBase}/c/${token}`, label, email } });
   }
 
-  function contractPage(ctx: Ctx, env: Envelope): void {
+  function contractPage(ctx: Ctx, env: Envelope, created?: { link: string; name: string }): void {
     need(ctx, 'owner', 'admin');
     const csrf = csrfField(ctx.session!.csrf);
     const state = envelopeState(env);
+    const studioSigners = db.counterSigners(env.id);
+    const parentParty = db.counterSignerForChild(env.id);
     page(
       ctx,
       env.label,
       'contracts',
       html`<p><a href="${base}/contracts">Back to contracts</a></p>
       <h1>${env.label}</h1>
+      ${created ? html`<section class="card notice" role="status"><h2>Signing link for ${created.name}</h2><p>Share only with this person. They must review the agreement and draw their own signature. This link is shown once.</p><code class="secret">${created.link}</code></section>` : ''}
+      ${parentParty ? html`<p>Studio signature for <a href="${base}/contracts/${parentParty.parentId}">the original contract</a>.</p>` : ''}
       <section class="card">
         <dl class="facts">
           <dt>Status</dt><dd><span class="pill pill--${state === 'complete' ? 'published' : state}">${state}</span></dd>
@@ -884,7 +925,7 @@ export async function createAdmin(options: AdminOptions) {
           <dt>Signer</dt><dd>${env.signerName} (${env.signerEmail})${env.signerCountry ? `, ${countryNames.of(env.signerCountry) ?? env.signerCountry}` : ''}</dd>
           <dt>Created</dt><dd>${shortDate(env.createdAt)} by ${env.createdBy}</dd>
           <dt>Expires</dt><dd>${shortDate(env.expiresAt)}</dd>
-          <dt>Countersignature</dt><dd>${env.counterRequired ? 'you will countersign' : 'not needed'}</dd>
+          <dt>Countersignature</dt><dd>${env.counterRequired ? (env.status === 'complete' && !studioSigners.length ? 'Legacy dashboard approval' : `${studioSigners.length || 1} drawn Studio signature(s) required`) : 'not needed'}</dd>
           ${env.overrideReason ? html`<dt>Country check overridden</dt><dd>${env.overrideReason}</dd>` : ''}
           ${env.recordId ? html`<dt>Signed</dt><dd>${shortDate(env.signedAt)}, <a href="${base}/submissions/${env.recordId}">view the signed record</a></dd>` : ''}
           ${env.countersignedAt ? html`<dt>Countersigned</dt><dd>${shortDate(env.countersignedAt)} by ${env.countersignedBy}</dd>` : ''}
@@ -892,10 +933,16 @@ export async function createAdmin(options: AdminOptions) {
           ${env.revokedAt ? html`<dt>Cancelled</dt><dd>${shortDate(env.revokedAt)}</dd>` : ''}
         </dl>
         <div class="actions">
-          ${env.status === 'awaiting-countersignature' ? html`<form method="post" action="${base}/contracts/${env.id}/countersign" class="inline">${csrf}<button type="submit">Countersign as ${ctx.account!.email}</button></form>` : ''}
+
           ${env.status === 'open' || env.status === 'signing' ? html`<form method="post" action="${base}/contracts/${env.id}/revoke" class="inline">${csrf}<button type="submit">Cancel this link</button></form>` : ''}
         </div>
-        ${env.status === 'awaiting-countersignature' ? html`<p class="muted">Countersigning seals your decision into the audit log with the signer's record hash, and emails the signer a confirmation.</p>` : ''}
+        ${studioSigners.length ? html`<h2>Required Studio signatures</h2><ul>${studioSigners.map((party) => {
+          const child = party.childId ? db.envelope(party.childId) : undefined;
+          return html`<li><strong>${party.name}</strong> (${party.email}): ${child?.status === 'complete' ? html`Signed; <a href="${base}/submissions/${child.recordId}">view sealed signature record</a>` : 'not signed'}
+          ${env.status === 'awaiting-countersignature' && child?.status !== 'complete' ? html`<form method="post" action="${base}/contracts/${env.id}/countersign" class="inline">${csrf}<input type="hidden" name="party" value="${party.id}"><button type="submit">${child ? 'Replace unsigned signing link' : 'Create signing link'} for ${party.name}</button></form>` : ''}</li>`;
+        })}</ul>` : ''}
+        ${env.status === 'awaiting-countersignature' && !studioSigners.length ? html`<form method="post" action="${base}/contracts/${env.id}/configure-countersigners" class="stack narrow">${csrf}<h2>Confirm Studio signers</h2>${studioSignerFields(ctx)}<button type="submit">Confirm required Studio signers</button></form>` : ''}
+        ${env.status === 'awaiting-countersignature' ? html`<p class="muted">Each Studio signer must use their own signing link and draw their signature. This contract completes only after every required Studio signer has signed. Creating a link does not sign for them.</p>` : ''}
       </section>`,
     );
   }
@@ -910,20 +957,27 @@ export async function createAdmin(options: AdminOptions) {
     if (action === 'revoke') {
       if (!db.revokeEnvelope(id, at)) throw new HttpError(409, 'Only a link that has not been signed can be cancelled');
       await audit(ctx, 'envelope.revoke', id, { signer: env.signerEmail });
+    } else if (action === 'configure-countersigners') {
+      if (env.status !== 'awaiting-countersignature') throw new HttpError(409, 'This contract is not waiting for Studio signatures');
+      const doc = documents.get(env.documentId, env.documentVersion);
+      if (!doc) throw new HttpError(404, 'No document');
+      if (db.counterSigners(id).length) throw new HttpError(409, 'Studio signers are already fixed');
+      const signers = readStudioSigners(ctx, form, doc);
+      db.configureCounterSigners(id, signers);
+      await audit(ctx, 'envelope.studio-signers', id, { names: signers.map((s) => s.name) });
     } else if (action === 'countersign') {
-      if (env.status !== 'awaiting-countersignature' || !env.recordId || !env.recordHash) throw new HttpError(409, 'This contract is not waiting for a countersignature');
-      const finalHash = await sha256Canonical({ envelope: env.id, document: `${env.documentId}@${env.documentVersion}`, signerRecord: { id: env.recordId, hash: env.recordHash }, countersignedBy: ctx.account!.email, countersignedAt: at });
-      if (!db.countersignEnvelope(id, ctx.account!.email, at, finalHash)) throw new HttpError(409, 'This contract was already countersigned');
-      await audit(ctx, 'envelope.countersign', id, { record: env.recordId, recordHash: env.recordHash, finalHash, document: `${env.documentId}@${env.documentVersion}` });
-      options.mailer
-        .send({
-          to: env.signerEmail,
-          from: `${options.operator.name.replace(/[<>"\r\n]/g, '')} <${options.operator.email}>`,
-          replyTo: options.operator.email,
-          subject: `Countersigned: ${env.label}`,
-          text: [`${options.operator.name} countersigned "${env.label}" on ${at} UTC.`, '', `Your signed record: ${env.recordId}`, `Record SHA-256: ${env.recordHash}`, `Final SHA-256 of the completed agreement: ${finalHash}`, '', `Questions: ${options.operator.email}`].join('\n'),
-        })
-        .catch((error: unknown) => options.log(`countersign notice for ${id} not sent: ${error instanceof Error ? error.message : String(error)}`));
+      if (env.status !== 'awaiting-countersignature' || !env.recordId || !env.recordHash) throw new HttpError(409, 'This contract is not waiting for Studio signatures');
+      const party = db.counterSigners(id).find((p) => p.id === form.get('party'));
+      if (!party) throw new HttpError(400, 'Pick a configured Studio signer; a button click cannot replace their drawn signature');
+      const existing = party.childId ? db.envelope(party.childId) : undefined;
+      if (existing?.status === 'complete' || existing?.status === 'signing') throw new HttpError(409, 'This Studio signature is already complete or in progress');
+      const token = newToken();
+      const child = db.createEnvelope({ tokenHash: hashToken(token), documentId: env.documentId, documentVersion: env.documentVersion,
+        label: `Studio signature: ${env.label}`.slice(0, 120), signerName: party.name, signerEmail: party.email, signerCountry: party.country,
+        counterRequired: false, createdBy: ctx.account!.email, createdAt: at, expiresAt: new Date(options.now().getTime() + 7 * 86400000).toISOString(), overrideReason: null });
+      if (!db.attachCounterLink(party.id, child.id, at)) { db.revokeEnvelope(child.id, at); throw new HttpError(409, 'Studio signer changed; reload before creating a link'); }
+      await audit(ctx, 'envelope.counter-link', id, { party: party.id, envelope: child.id, parentRecordHash: env.recordHash });
+      return contractPage(ctx, db.envelope(id)!, { name: party.name, link: `${options.origin}${options.signBase}/c/${token}` });
     } else {
       throw new HttpError(404, 'Not found');
     }

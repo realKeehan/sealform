@@ -56,6 +56,7 @@
     "prepack": "npm run build",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json",
     "secrets": "node scripts/check-secrets.mjs",
+    "pretest": "node scripts/build-client.mjs",
     "test": "node --experimental-strip-types --disable-warning=ExperimentalWarning --test \"test/**/*.test.ts\"",
     "check": "npm run secrets && npm run typecheck && npm test",
     "demo": "node --experimental-strip-types --disable-warning=ExperimentalWarning examples/demo/server.ts"

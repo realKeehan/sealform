@@ -170,9 +170,9 @@ its hosted signing page needs no site of yours. Entering the signer's country ch
 against that country's profile first; if the law there excludes this kind of document, creating the link
 needs a stated reason, which is kept in the audit log.
 
-Countersigning is a sealed entry in the audit log naming the account, the signer's record hash and a
-final hash of the whole agreement, and it emails the signer a confirmation. It is a decision recorded
-under your account, not a drawn signature.
+Countersigning requires each Studio party to draw their own signature through a separate private link. Configure one or two Studio signers when making the contract. Set `requiredCounterSigners` to their exact signing names in a private document manifest to enforce both named parties. After the recipient signs, open the contract and create each person's signing link. Creating a link does not sign for them. Replacing an unused link revokes its previous token. Completion requires every configured Studio signature; each sealed record references the original record hash, and the final hash and audit entry reference all signatures. Existing completed dashboard approvals retain their historical status and are labelled as legacy approvals.
+
+Public and private forms offer a focused reader and an unsigned text download containing the exact versioned agreement and electronic-signature disclosure. Downloading does not sign anything. Required checkbox labels include a red asterisk in the shared client.
 
 ### Serving the website too
 
@@ -196,6 +196,8 @@ const sealform = await createSealform({
   and the dashboard are not part of the site and keep working while it is parked.
 - **Site info.** Last build time, whether the parked and 404 pages exist, the record count and chain
   head, the sealing and published keys, and which checks are not configured.
+
+When Apache serves the main site on another hostname, configure `site: { dir: '/path/to/main-public', serve: false, publicUrl: 'https://studio.example.com', parkingFile: '/path/to/main-public/.sealform-parked' }`. The dashboard manages that site's parking flag without serving its pages on the signing hostname. Configure Apache to return `parked/index.html` with HTTP503 when the flag exists, allow its assets and validation paths, deny direct flag access, and preserve the flag during deployments. Parking writes are atomic, recover the saved state on startup, and report an error if the flag cannot be written. Hidden/private page rules are unavailable in this static-host mode.
 
 Static serving refuses dotfiles, `..` in any encoding, and symlinks that leave the folder; it sets
 `nosniff`, ETags and cache headers. Rules and the parking switch live in the database and every change

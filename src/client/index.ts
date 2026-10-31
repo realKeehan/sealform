@@ -70,6 +70,10 @@ export interface Labels {
   emptySignature: string;
   botCheckPending: string;
   fixedByLink: string;
+  readFocused: string;
+  closeReader: string;
+  downloadUnsigned: string;
+  unsignedNotice: string;
 }
 
 export const defaultLabels: Labels = {
@@ -101,6 +105,10 @@ export const defaultLabels: Labels = {
   emptySignature: 'draw your signature in the box',
   botCheckPending: 'Please complete the check above.',
   fixedByLink: 'Fixed by the link you were sent.',
+  readFocused: 'Read in focused view',
+  closeReader: 'Close reading view',
+  downloadUnsigned: 'Download unsigned copy (.txt)',
+  unsignedNotice: 'Unsigned review copy. Opening or downloading it does not sign the agreement.',
 };
 
 export interface MountOptions {
@@ -177,7 +185,53 @@ export async function mountSealform(root: HTMLElement, options: MountOptions): P
   // The form header already shows the title; drop a leading heading that repeats it.
   const firstHeading = docRegion.firstElementChild;
   if (firstHeading && /^H[3-6]$/.test(firstHeading.tagName) && firstHeading.textContent?.trim() === data.document.title.trim()) firstHeading.remove();
-  form.append(docRegion);
+  const focusButton = el('button', { type: 'button', class: 'sf-read-focus', 'aria-label': labels.readFocused, title: labels.readFocused }) as HTMLButtonElement;
+  /*! Bootstrap Icons. Copyright (c) 2019-2026 The Bootstrap Authors.
+   * Permission is hereby granted, free of charge, to any person obtaining a copy
+   * of this software and associated documentation files (the "Software"), to deal
+   * in the Software without restriction, including without limitation the rights
+   * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+   * copies of the Software, and to permit persons to whom the Software is
+   * furnished to do so, subject to the following conditions:
+   * The above copyright notice and this permission notice shall be included in
+   * all copies or substantial portions of the Software.
+   * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+   * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+   * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+   * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+   * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+   */
+  // Bootstrap Icons fullscreen, MIT: https://icons.getbootstrap.com/icons/fullscreen/
+  const fullscreen = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  for (const [name, value] of Object.entries({ viewBox: '0 0 16 16', width: '18', height: '18', fill: 'currentColor', 'aria-hidden': 'true', focusable: 'false' })) fullscreen.setAttribute(name, value);
+  const corners = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  corners.setAttribute('d', 'M1.5 1a.5.5 0 0 0-.5.5v4a.5.5 0 0 1-1 0v-4A1.5 1.5 0 0 1 1.5 0h4a.5.5 0 0 1 0 1zM10 .5a.5.5 0 0 1 .5-.5h4A1.5 1.5 0 0 1 16 1.5v4a.5.5 0 0 1-1 0v-4a.5.5 0 0 0-.5-.5h-4a.5.5 0 0 1-.5-.5M.5 10a.5.5 0 0 1 .5.5v4a.5.5 0 0 0 .5.5h4a.5.5 0 0 1 0 1h-4A1.5 1.5 0 0 1 0 14.5v-4a.5.5 0 0 1 .5-.5m15 0a.5.5 0 0 1 .5.5v4a1.5 1.5 0 0 1-1.5 1.5h-4a.5.5 0 0 1 0-1h4a.5.5 0 0 0 .5-.5v-4a.5.5 0 0 1 .5-.5');
+  fullscreen.append(corners);
+  focusButton.append(fullscreen);
+  const copyText = [labels.unsignedNotice, `${data.document.title} (${data.document.version}, ${data.document.lang})`, `Document SHA-256: ${data.document.sha256}`, '', data.document.text,
+    ...(data.disclosure ? ['', `Electronic signature disclosure (${data.disclosure.version})`, `Disclosure SHA-256: ${data.disclosure.sha256}`, '', data.disclosure.text] : []),
+  ].join('\n');
+  const downloadUrl = URL.createObjectURL(new Blob([copyText], { type: 'text/plain;charset=utf-8' }));
+  cleanup.push(() => URL.revokeObjectURL(downloadUrl));
+  const download = el('a', { href: downloadUrl, download: `${data.document.id}-${data.document.version}-${data.document.lang}-unsigned.txt` }, labels.downloadUnsigned);
+  download.classList.add('sf-download-unsigned');
+  const viewer = el('div', { class: 'sf-viewer' }, el('div', { class: 'sf-viewer-toolbar' }, focusButton), docRegion);
+  form.append(viewer, download);
+
+  const readerTitle = `${prefix}-reader-title`;
+  const readerHelp = `${prefix}-reader-help`;
+  const reader = el('dialog', { class: 'sf sf-reader', 'aria-labelledby': readerTitle, 'aria-describedby': readerHelp }) as HTMLDialogElement;
+  const closeReader = el('button', { type: 'button', class: 'sf-reader-close' }, labels.closeReader) as HTMLButtonElement;
+  const readerText = el('article', { class: 'sf-reader-document' });
+  readerText.append(renderMarkdown(data.document.text));
+  if (data.disclosure) readerText.append(el('h3', {}, labels.disclosure), renderMarkdown(data.disclosure.text));
+  reader.append(el('div', { class: 'sf-reader-controls' }, el('h2', { id: readerTitle }, data.document.title), closeReader), el('p', { id: readerHelp }, labels.unsignedNotice), readerText);
+  form.append(reader);
+  focusButton.addEventListener('click', () => { reader.showModal(); closeReader.focus(); });
+  closeReader.addEventListener('click', () => reader.close());
+  reader.addEventListener('close', () => focusButton.focus());
+  cleanup.push(() => { if (reader.open) reader.close(); });
 
   if (data.disclosure) {
     const details = el('details', { class: 'sf-disclosure', lang: data.disclosure.lang }, el('summary', {}, labels.disclosure));
@@ -502,7 +556,9 @@ export async function mountSealform(root: HTMLElement, options: MountOptions): P
     const box = el('input', { id, type: 'checkbox', 'aria-describedby': `${id}-error` }) as HTMLInputElement;
     if (required) box.setAttribute('required', '');
     inputs.set(key, box);
-    return el('div', { class: 'sf-check' }, box, el('label', { for: id }, label), slot(key, `${id}-error`));
+    const caption = el('label', { for: id }, label);
+    if (required) caption.append(' ', el('span', { class: 'sf-required-marker', 'aria-hidden': 'true' }, '*'));
+    return el('div', { class: 'sf-check' }, box, caption, slot(key, `${id}-error`));
   }
 
   function slot(key: string, id: string): HTMLElement {

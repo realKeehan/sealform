@@ -3,7 +3,8 @@
 // site behind a "back soon" page. The dashboard edits the rules; they live in the database.
 
 import { createReadStream } from 'node:fs';
-import { readFile, realpath, stat } from 'node:fs/promises';
+import { chmod, readFile, realpath, rename, stat, unlink, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { extname, join, resolve, sep } from 'node:path';
 import type { AdminStore } from './admin/db.ts';
@@ -15,6 +16,12 @@ export interface SiteConfig {
   headers?: Record<string, string>;
   /** Paths that stay reachable while parked, besides the defaults. */
   parkingAllow?: string[];
+  /** False when Apache serves this folder; only manage its parking switch here. */
+  serve?: boolean;
+  /** Optional nonsecret flag read by the static host's rewrite rule. */
+  parkingFile?: string;
+  /** Address shown in the dashboard when managing a separate hostname. */
+  publicUrl?: string;
 }
 
 export type RuleMode = 'hidden' | 'private';
@@ -57,13 +64,50 @@ export class SiteLayer {
   private readonly isAdmin: (req: IncomingMessage) => boolean;
   private readonly operatorName: string;
 
+  private readonly config: SiteConfig;
+  private parkingQueue: Promise<void> = Promise.resolve();
+
   constructor(config: SiteConfig, extras: { db: AdminStore | undefined; isAdmin: (req: IncomingMessage) => boolean; operatorName: string }) {
+    this.config = config;
     this.dir = resolve(config.dir);
     this.headers = config.headers ?? {};
     this.allow = [...DEFAULT_PARKING_ALLOW, ...(config.parkingAllow ?? [])];
     this.db = extras.db;
     this.isAdmin = extras.isAdmin;
     this.operatorName = extras.operatorName;
+  }
+
+  /** Restore the static host's flag from the saved dashboard state after a restart. */
+  async syncParking(): Promise<void> {
+    await this.mirrorParking(this.db?.setting('parking') === 'on');
+  }
+
+  setParking(on: boolean): Promise<void> {
+    const update = this.parkingQueue.then(async () => {
+      const previous = this.db?.setting('parking') === 'on';
+      await this.mirrorParking(on);
+      try { this.db?.saveSetting('parking', on ? 'on' : 'off'); }
+      catch (error) { await this.mirrorParking(previous); throw error; }
+    });
+    this.parkingQueue = update.catch(() => {});
+    return update;
+  }
+
+  private async mirrorParking(on: boolean): Promise<void> {
+    const flag = this.config.parkingFile;
+    if (!flag) return;
+    if (!on) {
+      await unlink(flag).catch((error: NodeJS.ErrnoException) => { if (error.code !== 'ENOENT') throw error; });
+      return;
+    }
+    const temporary = `${flag}.${randomUUID()}.tmp`;
+    try {
+      await writeFile(temporary, 'parked\n', { mode: 0o644, flag: 'wx' });
+      await chmod(temporary, 0o644);
+      await rename(temporary, flag);
+    } finally {
+      await unlink(temporary).catch((error: NodeJS.ErrnoException) => { if (error.code !== 'ENOENT') throw error; });
+    }
   }
 
   /** Serves the request, or answers it with the right status. Always handles it. */
@@ -90,10 +134,12 @@ export class SiteLayer {
   }
 
   /** Facts for the dashboard. */
-  async info(): Promise<{ dir: string; exists: boolean; builtAt: string | null; hasParkedPage: boolean; hasNotFoundPage: boolean; allow: string[] }> {
+  async info(): Promise<{ dir: string; exists: boolean; builtAt: string | null; hasParkedPage: boolean; hasNotFoundPage: boolean; allow: string[]; serving: boolean; publicUrl: string | null }> {
     const modified = await stat(join(this.dir, 'index.html')).then((s) => s.mtime.toISOString(), () => null);
     return {
       dir: this.dir,
+      serving: this.config.serve !== false,
+      publicUrl: this.config.publicUrl ?? null,
       exists: await stat(this.dir).then((s) => s.isDirectory(), () => false),
       builtAt: modified,
       hasParkedPage: await stat(join(this.dir, 'parked', 'index.html')).then(() => true, () => false),
