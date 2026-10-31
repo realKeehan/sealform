@@ -21,6 +21,7 @@ import {
   RECORD_FORMAT,
   sealRecord,
   sha256Hex,
+  sha256Canonical,
   type AssuranceCheck,
   type KeySet,
   type PrivateKeyFile,
@@ -190,13 +191,23 @@ export async function createSealform(config: SealformConfig): Promise<Sealform> 
     if (found.status === 'revoked') throw new HttpError(410, 'This signing link was cancelled. Ask the sender for a new one.');
     if (found.status === 'awaiting-countersignature' || found.status === 'complete') throw new HttpError(409, 'This agreement has already been signed.');
     if (found.expiresAt < now().toISOString()) throw new HttpError(410, 'This signing link has expired. Ask the sender for a new one.');
+    const party = admin!.db.counterSignerForChild(found.id);
+    if (party && admin!.db.envelope(party.parentId)?.status !== 'awaiting-countersignature') throw new HttpError(409, 'The original contract is not awaiting Studio signatures');
     return found;
   }
 
   async function getEnvelope(req: IncomingMessage, res: ServerResponse, token: string, url: URL): Promise<void> {
     const envelope = openEnvelope(token);
     const doc = documents.get(envelope.documentId, envelope.documentVersion);
-    if (!doc || documents.status(doc) !== 'published') throw new HttpError(410, 'This agreement is no longer open for signing. Ask the sender.');
+    const isCounter = !!admin!.db.counterSignerForChild(envelope.id);
+    if (!doc || (documents.status(doc) !== 'published' && !(isCounter && documents.status(doc) === 'closed'))) throw new HttpError(410, 'This agreement is no longer open for signing. Ask the sender.');
+    if (isCounter) {
+      const party = admin!.db.counterSignerForChild(envelope.id)!;
+      const parent = admin!.db.envelope(party.parentId)!;
+      const primary = parent.recordId ? store.getEntry(parent.recordId) : undefined;
+      if (!primary || primary.format !== RECORD_FORMAT) throw new HttpError(409, 'The original signed record is unavailable');
+      url.searchParams.set('lang', primary.document.lang);
+    }
     return serveDocument(req, res, doc, url, envelope);
   }
 
@@ -220,7 +231,7 @@ export async function createSealform(config: SealformConfig): Promise<Sealform> 
     if (Math.random() < 0.02) store.purgeExpiredSessions(opened.toISOString());
     const disclosureText = disclosure ? (disclosure.texts.get(lang) ?? disclosure.texts.get(disclosure.manifest.governingLang)!) : undefined;
     sendJson(res, 200, {
-      document: { id: doc.manifest.id, version: doc.manifest.version, title: doc.manifest.title, category: doc.manifest.category, lang, languages: doc.manifest.languages, governingLang: doc.manifest.governingLang, text: text.text, sha256: text.sha256, manifestSha256: doc.manifestSha256 },
+      document: { id: doc.manifest.id, version: doc.manifest.version, title: doc.manifest.title, category: doc.manifest.category, lang, languages: envelope && admin!.db.counterSignerForChild(envelope.id) ? [lang] : doc.manifest.languages, governingLang: doc.manifest.governingLang, text: text.text, sha256: text.sha256, manifestSha256: doc.manifestSha256 },
       disclosure: disclosure && disclosureText ? { id: disclosure.manifest.id, version: disclosure.manifest.version, lang: disclosureText.lang, text: disclosureText.text, sha256: disclosureText.sha256 } : null,
       fields: doc.manifest.fields,
       consents: doc.manifest.consents,
@@ -236,7 +247,9 @@ export async function createSealform(config: SealformConfig): Promise<Sealform> 
     // A private link names its own document, and the link itself is the secret; there is no bot check.
     const envelope = typeof body?.envelopeToken === 'string' ? openEnvelope(body.envelopeToken) : undefined;
     const doc = envelope ? documents.get(envelope.documentId, envelope.documentVersion) : documents.get(String(body?.documentId ?? ''), String(body?.version ?? ''));
-    if (!doc || documents.status(doc) !== 'published' || (!envelope && !doc.manifest.public) || (envelope && (body.documentId !== doc.manifest.id || body.version !== doc.manifest.version))) {
+    const counterParty = envelope ? admin!.db.counterSignerForChild(envelope.id) : undefined;
+    const parentEnvelope = counterParty ? admin!.db.envelope(counterParty.parentId) : undefined;
+    if (!doc || (documents.status(doc) !== 'published' && !(counterParty && documents.status(doc) === 'closed')) || (!envelope && !doc.manifest.public) || (envelope && (body.documentId !== doc.manifest.id || body.version !== doc.manifest.version))) {
       throw new HttpError(409, 'This document version is no longer open for signing. Reload the page to get the current version.');
     }
     // The signer's country picks the jurisdiction profile, which can add required fields.
@@ -268,6 +281,10 @@ export async function createSealform(config: SealformConfig): Promise<Sealform> 
     try {
       const text = doc.texts.get(request.lang);
       if (!text || text.sha256 !== request.textSha256) throw new HttpError(409, 'The text you saw does not match the published version. Reload the page.');
+      if (counterParty) {
+        const primary = parentEnvelope?.recordId ? store.getEntry(parentEnvelope.recordId) : undefined;
+        if (parentEnvelope?.status !== 'awaiting-countersignature' || !primary || primary.format !== RECORD_FORMAT || primary.hash !== parentEnvelope.recordHash || primary.document.lang !== request.lang || primary.document.sha256 !== text.sha256 || primary.document.manifestSha256 !== doc.manifestSha256) throw new HttpError(409, 'The original signed agreement does not match this Studio signing request');
+      }
       if (doc.manifestSha256 !== request.manifestSha256) throw new HttpError(409, 'The form you saw does not match the published version. Reload the page.');
       if (jurisdiction) {
         const needs = jurisdiction.loaded.profile.formRequirements.find((r) => r.category === doc.manifest.category);
@@ -300,7 +317,7 @@ export async function createSealform(config: SealformConfig): Promise<Sealform> 
               disclosure: disclosure && disclosureText
                 ? { id: disclosure.manifest.id, version: disclosure.manifest.version, lang: disclosureText.lang, sha256: disclosureText.sha256, manifestSha256: disclosure.manifestSha256 }
                 : { id: 'none', version: 'none', lang: request.lang, sha256: '0'.repeat(64) },
-              ...(envelope ? { envelope: { id: envelope.id, role: 'signer', order: 1 } } : {}),
+              ...(envelope ? { envelope: { id: envelope.id, role: counterParty ? 'countersigner' : 'signer', order: counterParty ? counterParty.position + 2 : 1, ...(counterParty && parentEnvelope?.recordHash ? { parentEnvelopeId: parentEnvelope.id, parentRecordHash: parentEnvelope.recordHash } : {}) } } : {}),
               ...(jurisdiction ? { jurisdiction: { profile: jurisdiction.loaded.profile.id, version: jurisdiction.loaded.profile.version, sha256: jurisdiction.loaded.sha256, fallback: jurisdiction.fallback } } : {}),
               fields: request.fields,
               consent: request.consents,
@@ -339,6 +356,23 @@ export async function createSealform(config: SealformConfig): Promise<Sealform> 
       store.setPdfHash(id, await sha256Hex(new Uint8Array(pdf)));
 
       if (envelope) admin!.db.finishEnvelope(envelope.id, record.id, record.hash, receivedAt.toISOString(), envelope.counterRequired);
+      if (counterParty && parentEnvelope) {
+        const parties = admin!.db.counterSigners(parentEnvelope.id);
+        const signatures = parties.map((party) => ({ party, child: party.childId ? admin!.db.envelope(party.childId) : undefined }));
+        if (signatures.every(({ child }) => child?.status === 'complete' && child.recordId && child.recordHash)) {
+          const completedAt = receivedAt.toISOString();
+          const finalHash = await sha256Canonical({ envelope: parentEnvelope.id, document: `${doc.manifest.id}@${doc.manifest.version}`,
+            signerRecord: { id: parentEnvelope.recordId, hash: parentEnvelope.recordHash },
+            studioSignatures: signatures.map(({ party, child }) => ({ name: party.name, email: party.email, country: party.country, record: child!.recordId, hash: child!.recordHash })), completedAt });
+          if (admin!.db.completeDrawnCountersignatures(parentEnvelope.id, parties.map((p) => p.email).join(', '), completedAt, finalHash)) {
+            await admin!.db.audit(sealingKey, { at: completedAt, actor: 'system', action: 'envelope.countersign', target: parentEnvelope.id,
+              details: { recordHash: parentEnvelope.recordHash, finalHash, studioRecords: signatures.map(({ child }) => child!.recordId!), drawnSignatures: true }, ip });
+            await mailer.send({ to: parentEnvelope.signerEmail, from: `${config.operator.name.replace(/[<>"\r\n]/g, '')} <${config.operator.email}>`, replyTo: config.operator.email,
+              subject: `Countersigned: ${parentEnvelope.label}`, text: [`All required Studio signers have drawn their signatures for "${parentEnvelope.label}".`, `Original record: ${parentEnvelope.recordId}`, `Final SHA-256: ${finalHash}`,
+              ...signatures.map(({ party, child }) => `${party.name}: ${child!.recordId} (SHA-256 ${child!.recordHash})`)].join('\n') }).catch(() => config.log?.('Completed-contract notice could not be delivered'));
+          }
+        }
+      }
       const receiptBase = `${origin}${base}/api/receipts/${receiptToken}`;
       if (receiptTo) {
         mailer

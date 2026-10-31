@@ -170,9 +170,9 @@ its hosted signing page needs no site of yours. Entering the signer's country ch
 against that country's profile first; if the law there excludes this kind of document, creating the link
 needs a stated reason, which is kept in the audit log.
 
-Countersigning is a sealed entry in the audit log naming the account, the signer's record hash and a
-final hash of the whole agreement, and it emails the signer a confirmation. It is a decision recorded
-under your account, not a drawn signature.
+Countersigning requires each Studio party to draw their own signature through a separate private link. Configure one or two Studio signers when making the contract. Set `requiredCounterSigners` to their exact signing names in a private document manifest to enforce both named parties. After the recipient signs, open the contract and create each person's signing link. Creating a link does not sign for them. Replacing an unused link revokes its previous token. Completion requires every configured Studio signature; each sealed record references the original record hash, and the final hash and audit entry reference all signatures. Existing completed dashboard approvals retain their historical status and are labelled as legacy approvals.
+
+Public and private forms offer a focused reader and an unsigned text download containing the exact versioned agreement and electronic-signature disclosure. Downloading does not sign anything. Required checkbox labels include a red asterisk in the shared client.
 
 ### Serving the website too
 

@@ -830,7 +830,7 @@ async function signLink(app: App, token: string, overrides: Record<string, unkno
   });
 }
 
-test('a private link is created once, signs exactly once, and is countersigned from the dashboard', async () => {
+test('a private link signs once and requires a separate drawn Studio signature', async () => {
   const app = await start('contracts');
   try {
     const owner = await ownerSession(app);
@@ -874,21 +874,34 @@ test('a private link is created once, signs exactly once, and is countersigned f
     assert.equal((await fetch(`${app.url}/sealform/api/envelopes/${token}`)).status, 409);
     assert.equal((await signLink(app, token!)).status, 409);
 
-    // Countersign: sealed into the audit log, confirmed to the signer by email.
+    // A dashboard click only makes a link; the Studio signer must draw independently.
     const detail = await owner.get(`/contracts/${env.id}`);
-    assert.match(detail.text, /Countersign as owner@example.com/);
-    const done = await owner.post(`/contracts/${env.id}/countersign`, { csrf });
-    assert.equal(done.location, `${BASE}/contracts/${env.id}?m=saved`);
+    assert.match(detail.text, /Create signing link/);
+    assert.equal((await owner.post(`/contracts/${env.id}/countersign`, { csrf })).status, 400);
+    const party = app.admin.counterSigners(env.id)[0]!;
+    const link = await owner.post(`/contracts/${env.id}/countersign`, { csrf, party: party.id });
+    assert.equal(link.status, 200);
+    const childToken = /\/sealform\/c\/([A-Za-z0-9_-]{43})</.exec(link.text)![1]!;
+    assert.equal(app.admin.envelope(env.id)!.status, 'awaiting-countersignature');
+    const childSigned = await signLink(app, childToken, {
+      fields: { legalName: party.name, email: party.email, country: 'DE' },
+      signature: { typedName: party.name, vector: [{ points: stroke() }], png: png() },
+    });
+    assert.equal(childSigned.status, 201, await childSigned.clone().text());
+    const childRecord = app.sealform.store.getEntry(((await childSigned.json()) as { id: string }).id) as SealformRecord;
+    assert.deepEqual(childRecord.envelope, { id: party.childId ?? app.admin.counterSigners(env.id)[0]!.childId, role: 'countersigner', order: 2, parentEnvelopeId: env.id, parentRecordHash: record.hash });
     const finished = app.admin.envelope(env.id)!;
     assert.equal(finished.status, 'complete');
     assert.equal(finished.countersignedBy, 'owner@example.com');
     assert.match(finished.finalHash!, /^[0-9a-f]{64}$/);
     assert.notEqual(finished.finalHash, record.hash);
-    assert.equal((await owner.post(`/contracts/${env.id}/countersign`, { csrf })).status, 409, 'cannot countersign twice');
+    assert.equal((await owner.post(`/contracts/${env.id}/countersign`, { csrf, party: party.id })).status, 409);
+    assert.equal((await signLink(app, childToken)).status, 409, 'Studio link cannot sign twice');
 
     const audit = app.admin.auditEntries().filter((e) => e.action.startsWith('envelope.'));
-    assert.deepEqual(audit.map((e) => e.action), ['envelope.create', 'envelope.countersign']);
-    assert.equal(audit[1]!.details.recordHash, record.hash);
+    assert.deepEqual(audit.map((e) => e.action), ['envelope.create', 'envelope.counter-link', 'envelope.countersign']);
+    assert.equal(audit[2]!.details.recordHash, record.hash);
+    assert.equal(audit[2]!.details.drawnSignatures, true);
     assert.equal((await verifyChain(app.admin.auditEntries(), keyset)).ok, true);
     await new Promise((resolve) => setTimeout(resolve, 80));
     const { readdir, readFile } = await import('node:fs/promises');
@@ -898,6 +911,52 @@ test('a private link is created once, signs exactly once, and is countersigned f
   } finally {
     await app.stop();
   }
+});
+
+test('both named Studio parties must draw signatures, with replaceable unused links and the original closed version', async () => {
+  const docs = join(dir, 'docs-two-studio');
+  const { cp, readFile, writeFile } = await import('node:fs/promises');
+  await cp(FIXTURES, docs, { recursive: true });
+  const manifestPath = join(docs, 'partner-contract', 'PARTNER-1', 'document.json');
+  const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+  manifest.requiredCounterSigners = ['Olive Owner', 'Sam Studio'];
+  await writeFile(manifestPath, JSON.stringify(manifest));
+  const app = await start('two-studio', { documentsDir: docs });
+  try {
+    const owner = await ownerSession(app);
+    assert.equal((await createLink(owner, { counter: '' })).response.status, 400);
+    assert.equal((await createLink(owner)).response.status, 400, 'cannot omit the second named party');
+    const created = await createLink(owner, { counter2Name: 'Sam Studio', counter2Email: 'sam@example.com', counter2Country: 'DE' });
+    assert.equal(created.response.status, 200);
+    const parent = app.admin.envelopes()[0]!;
+    const parties = app.admin.counterSigners(parent.id);
+    assert.equal(parties.length, 2);
+    assert.equal((await signLink(app, created.token!)).status, 201);
+    const originalHash = app.admin.envelope(parent.id)!.recordHash;
+    const make = async (party: typeof parties[number]) => {
+      const response = await owner.post(`/contracts/${parent.id}/countersign`, { csrf: created.csrf, party: party.id });
+      assert.equal(response.status, 200, response.text);
+      return /\/sealform\/c\/([A-Za-z0-9_-]{43})</.exec(response.text)![1]!;
+    };
+    const obsolete = await make(parties[0]!);
+    const first = await make(parties[0]!);
+    assert.equal((await signLink(app, obsolete)).status, 410, 'replacing a link revokes the previous token');
+    const second = await make(parties[1]!);
+    assert.equal((await owner.post(`/contracts/${parent.id}/configure-countersigners`, { csrf: created.csrf })).status, 409, 'signer identities cannot be replaced after signing');
+    app.sealform.documents.setStatus('partner-contract', 'PARTNER-1', 'closed');
+    for (const [i, token] of [first, second].entries()) {
+      const party = parties[i]!;
+      assert.equal((await signLink(app, token)).status, 422, 'another identity cannot use a Studio link');
+      const signed = await signLink(app, token, { fields: { legalName: party.name, email: party.email, country: 'DE' }, signature: { typedName: party.name, vector: [{ points: stroke() }], png: png() } });
+      assert.equal(signed.status, 201, await signed.clone().text());
+      const record = app.sealform.store.getEntry(((await signed.json()) as { id: string }).id) as SealformRecord;
+      assert.equal(record.envelope!.parentRecordHash, originalHash);
+      assert.equal(record.envelope!.order, i + 2);
+      assert.equal(app.admin.envelope(parent.id)!.status, i === 0 ? 'awaiting-countersignature' : 'complete');
+    }
+    assert.equal((await verifyChain(app.sealform.store.entries(), keyset)).ok, true);
+    assert.equal((await verifyChain(app.admin.auditEntries(), keyset)).ok, true);
+  } finally { await app.stop(); }
 });
 
 test('a link without countersignature completes on signing; cancelled and expired links stop working', async () => {

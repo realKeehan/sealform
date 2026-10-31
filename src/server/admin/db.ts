@@ -137,6 +137,17 @@ CREATE TABLE IF NOT EXISTS envelopes (
   revoked_at TEXT,
   override_reason TEXT
 );
+CREATE TABLE IF NOT EXISTS envelope_counter_signers (
+  id TEXT PRIMARY KEY,
+  parent_id TEXT NOT NULL REFERENCES envelopes(id),
+  position INTEGER NOT NULL,
+  signer_name TEXT NOT NULL,
+  signer_email TEXT NOT NULL,
+  signer_country TEXT,
+  child_id TEXT UNIQUE REFERENCES envelopes(id),
+  UNIQUE(parent_id, position),
+  UNIQUE(parent_id, signer_email)
+);
 CREATE TABLE IF NOT EXISTS document_status (
   document_id TEXT NOT NULL,
   version TEXT NOT NULL,
@@ -403,6 +414,53 @@ export class AdminStore {
     );
   }
 
+  counterSigners(parentId: string): CounterSigner[] {
+    return (this.db.prepare('SELECT * FROM envelope_counter_signers WHERE parent_id = ? ORDER BY position').all(parentId) as Record<string, unknown>[]).map((r) => ({
+      id: r.id as string, parentId: r.parent_id as string, position: r.position as number,
+      name: r.signer_name as string, email: r.signer_email as string, country: r.signer_country as string | null, childId: r.child_id as string | null,
+    }));
+  }
+
+  counterSignerForChild(childId: string): CounterSigner | undefined {
+    const row = this.db.prepare('SELECT parent_id FROM envelope_counter_signers WHERE child_id = ?').get(childId) as { parent_id: string } | undefined;
+    return row ? this.counterSigners(row.parent_id).find((s) => s.childId === childId) : undefined;
+  }
+
+  configureCounterSigners(parentId: string, signers: { name: string; email: string; country: string | null }[]): void {
+    const parent = this.envelope(parentId);
+    if (!parent?.counterRequired || !['open', 'awaiting-countersignature'].includes(parent.status)) throw new Error('This contract cannot configure Studio signers');
+    if (this.counterSigners(parentId).length) throw new Error('Studio signers are already fixed for this contract');
+    if (signers.length < 1 || signers.length > 2 || new Set(signers.map((s) => s.email)).size !== signers.length) throw new Error('One or two distinct Studio signers are required');
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      for (const [position, signer] of signers.entries()) this.db.prepare('INSERT INTO envelope_counter_signers (id,parent_id,position,signer_name,signer_email,signer_country) VALUES (?,?,?,?,?,?)').run(prefixedId('party'), parentId, position, signer.name, signer.email, signer.country);
+      this.db.exec('COMMIT');
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+  }
+
+  attachCounterLink(partyId: string, childId: string, at: string): boolean {
+    const row = this.db.prepare('SELECT parent_id, child_id FROM envelope_counter_signers WHERE id = ?').get(partyId) as { parent_id: string; child_id: string | null } | undefined;
+    if (!row) return false;
+    const parent = this.envelope(row.parent_id);
+    const party = this.counterSigners(row.parent_id).find((p) => p.id === partyId)!;
+    const child = this.envelope(childId);
+    const previous = row.child_id ? this.envelope(row.child_id) : undefined;
+    if (parent?.status !== 'awaiting-countersignature' || !child || child.counterRequired || child.status !== 'open' || child.documentId !== parent.documentId || child.documentVersion !== parent.documentVersion || child.signerName !== party.name || child.signerEmail !== party.email || child.signerCountry !== party.country || previous?.status === 'complete' || previous?.status === 'signing') return false;
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      if (previous?.status === 'open') this.revokeEnvelope(previous.id, at);
+      this.db.prepare('UPDATE envelope_counter_signers SET child_id = ? WHERE id = ?').run(childId, partyId);
+      this.db.exec('COMMIT');
+      return true;
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+  }
+
+  completeDrawnCountersignatures(parentId: string, by: string, at: string, finalHash: string): boolean {
+    const signers = this.counterSigners(parentId);
+    if (!signers.length || signers.some((s) => { const child = s.childId ? this.envelope(s.childId) : undefined; return child?.status !== 'complete' || !child.recordId || !child.recordHash; })) return false;
+    return this.countersignEnvelope(parentId, by, at, finalHash);
+  }
+
   // Document status ------------------------------------------------------------------------------
 
   documentStatuses(): { documentId: string; version: string; status: DocumentStatus }[] {
@@ -462,6 +520,8 @@ export class AdminStore {
     return Object.fromEntries(rows.map((row) => [row.s, row.n]));
   }
 }
+
+export interface CounterSigner { id: string; parentId: string; position: number; name: string; email: string; country: string | null; childId: string | null }
 
 export type EnvelopeStatus = 'open' | 'signing' | 'awaiting-countersignature' | 'complete' | 'revoked';
 

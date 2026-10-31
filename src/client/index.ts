@@ -70,6 +70,10 @@ export interface Labels {
   emptySignature: string;
   botCheckPending: string;
   fixedByLink: string;
+  readFocused: string;
+  closeReader: string;
+  downloadUnsigned: string;
+  unsignedNotice: string;
 }
 
 export const defaultLabels: Labels = {
@@ -101,6 +105,10 @@ export const defaultLabels: Labels = {
   emptySignature: 'draw your signature in the box',
   botCheckPending: 'Please complete the check above.',
   fixedByLink: 'Fixed by the link you were sent.',
+  readFocused: 'Read in focused view',
+  closeReader: 'Close reading view',
+  downloadUnsigned: 'Download unsigned copy (.txt)',
+  unsignedNotice: 'Unsigned review copy. Opening or downloading it does not sign the agreement.',
 };
 
 export interface MountOptions {
@@ -177,7 +185,30 @@ export async function mountSealform(root: HTMLElement, options: MountOptions): P
   // The form header already shows the title; drop a leading heading that repeats it.
   const firstHeading = docRegion.firstElementChild;
   if (firstHeading && /^H[3-6]$/.test(firstHeading.tagName) && firstHeading.textContent?.trim() === data.document.title.trim()) firstHeading.remove();
-  form.append(docRegion);
+  const readingActions = el('div', { class: 'sf-reading-actions' });
+  const focusButton = el('button', { type: 'button', class: 'sf-read-focus' }, labels.readFocused) as HTMLButtonElement;
+  const copyText = [labels.unsignedNotice, `${data.document.title} (${data.document.version}, ${data.document.lang})`, `Document SHA-256: ${data.document.sha256}`, '', data.document.text,
+    ...(data.disclosure ? ['', `Electronic signature disclosure (${data.disclosure.version})`, `Disclosure SHA-256: ${data.disclosure.sha256}`, '', data.disclosure.text] : []),
+  ].join('\n');
+  const downloadUrl = URL.createObjectURL(new Blob([copyText], { type: 'text/plain;charset=utf-8' }));
+  cleanup.push(() => URL.revokeObjectURL(downloadUrl));
+  const download = el('a', { href: downloadUrl, download: `${data.document.id}-${data.document.version}-${data.document.lang}-unsigned.txt` }, labels.downloadUnsigned);
+  readingActions.append(focusButton, download);
+  form.append(readingActions, docRegion);
+
+  const readerTitle = `${prefix}-reader-title`;
+  const readerHelp = `${prefix}-reader-help`;
+  const reader = el('dialog', { class: 'sf sf-reader', 'aria-labelledby': readerTitle, 'aria-describedby': readerHelp }) as HTMLDialogElement;
+  const closeReader = el('button', { type: 'button', class: 'sf-reader-close' }, labels.closeReader) as HTMLButtonElement;
+  const readerText = el('article', { class: 'sf-reader-document' });
+  readerText.append(renderMarkdown(data.document.text));
+  if (data.disclosure) readerText.append(el('h3', {}, labels.disclosure), renderMarkdown(data.disclosure.text));
+  reader.append(el('div', { class: 'sf-reader-controls' }, el('h2', { id: readerTitle }, data.document.title), closeReader), el('p', { id: readerHelp }, labels.unsignedNotice), readerText);
+  form.append(reader);
+  focusButton.addEventListener('click', () => { reader.showModal(); closeReader.focus(); });
+  closeReader.addEventListener('click', () => reader.close());
+  reader.addEventListener('close', () => focusButton.focus());
+  cleanup.push(() => { if (reader.open) reader.close(); });
 
   if (data.disclosure) {
     const details = el('details', { class: 'sf-disclosure', lang: data.disclosure.lang }, el('summary', {}, labels.disclosure));
@@ -502,7 +533,9 @@ export async function mountSealform(root: HTMLElement, options: MountOptions): P
     const box = el('input', { id, type: 'checkbox', 'aria-describedby': `${id}-error` }) as HTMLInputElement;
     if (required) box.setAttribute('required', '');
     inputs.set(key, box);
-    return el('div', { class: 'sf-check' }, box, el('label', { for: id }, label), slot(key, `${id}-error`));
+    const caption = el('label', { for: id }, label);
+    if (required) caption.append(' ', el('span', { class: 'sf-required-marker', 'aria-hidden': 'true' }, '*'));
+    return el('div', { class: 'sf-check' }, box, caption, slot(key, `${id}-error`));
   }
 
   function slot(key: string, id: string): HTMLElement {
