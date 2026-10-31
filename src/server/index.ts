@@ -163,6 +163,7 @@ export async function createSealform(config: SealformConfig): Promise<Sealform> 
         profiles,
         operatorProfile: config.operatorJurisdiction ? profiles.get(config.operatorJurisdiction) : undefined,
         siteInfo: config.site ? () => site!.info() : undefined,
+        siteParking: config.site ? (on) => site!.setParking(on) : undefined,
         signBase: base,
         mailer,
         operator: config.operator,
@@ -214,6 +215,7 @@ export async function createSealform(config: SealformConfig): Promise<Sealform> 
   site = config.site
     ? new SiteLayer(config.site, { db: admin?.db, isAdmin: (req) => admin?.isSignedIn(req) ?? false, operatorName: config.operator.name })
     : undefined;
+  await site?.syncParking();
 
   async function getDocument(req: IncomingMessage, res: ServerResponse, id: string, url: URL): Promise<void> {
     const doc = documents.current(id);
@@ -426,7 +428,7 @@ export async function createSealform(config: SealformConfig): Promise<Sealform> 
     const contract = new RegExp(`^${base.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/c/([A-Za-z0-9_-]{43})$`).exec(path);
     if (admin && req.method === 'GET' && contract) {
       limit(readLimiter, `read:${ip}`);
-      sendBytes(res, 200, 'text/html; charset=utf-8', Buffer.from(contractPage(base, contract[1]!)), CONTRACT_HEADERS);
+      sendBytes(res, 200, 'text/html; charset=utf-8', Buffer.from(await contractPage(base, contract[1]!)), CONTRACT_HEADERS);
       return true;
     }
     if (admin && req.method === 'GET' && path.startsWith(`${base}/assets/`)) {
@@ -483,7 +485,7 @@ export async function createSealform(config: SealformConfig): Promise<Sealform> 
     handled.then((done) => (done ? true : route(req, res))).then(
       (handled) => {
         if (handled) return;
-        if (site) {
+        if (site && config.site?.serve !== false) {
           site.handle(req, res).catch((error: unknown) => {
             log(`site error: ${error instanceof Error ? error.message : String(error)}`);
             if (!res.headersSent) res.writeHead(500).end();
@@ -521,17 +523,27 @@ const CONTRACT_HEADERS = {
 };
 
 /** The hosted signing page for a private link. No inline script or style, so the CSP can forbid both. */
-function contractPage(base: string, token: string): string {
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex, nofollow"><link rel="icon" href="data:,"><title>Sign agreement</title><link rel="stylesheet" href="${base}/assets/sealform.css"><link rel="stylesheet" href="${base}/assets/contract.css"></head><body><main><div id="sign" data-endpoint="${base}" data-token="${token}"></div><noscript><p>Signing needs JavaScript.</p></noscript></main><script type="module" src="${base}/assets/contract.js"></script></body></html>`;
+async function contractPage(base: string, token: string): Promise<string> {
+  const revision = await contractAssetRevision();
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex, nofollow"><link rel="icon" href="data:,"><title>Sign agreement</title><link rel="stylesheet" href="${base}/assets/sealform.css?v=${revision}"><link rel="stylesheet" href="${base}/assets/contract.css?v=${revision}"></head><body><main><div id="sign" data-endpoint="${base}" data-token="${token}"></div><noscript><p>Signing needs JavaScript.</p></noscript></main><script type="module" src="${base}/assets/contract.js?v=${revision}"></script></body></html>`;
 }
 
-const CONTRACT_JS = "import { mountSealform } from './sealform.js';\nconst el = document.getElementById('sign');\nmountSealform(el, { endpoint: el.dataset.endpoint, envelopeToken: el.dataset.token });\n";
+const CONTRACT_JS = "const { mountSealform } = await import('./sealform.js' + new URL(import.meta.url).search);\nconst el = document.getElementById('sign');\nmountSealform(el, { endpoint: el.dataset.endpoint, envelopeToken: el.dataset.token });\n";
 const CONTRACT_CSS = 'body{margin:0;background:#fbfaf7;font:16px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}main{max-width:46rem;margin:0 auto;padding:2rem 1rem}';
+
+let assetRevision: Promise<string> | undefined;
+function contractAssetRevision(): Promise<string> {
+  return assetRevision ??= Promise.all(['sealform.js', 'sealform.css'].map(contractAsset)).then((assets) => {
+    const hash = createHash('sha256').update(CONTRACT_JS).update(CONTRACT_CSS);
+    for (const asset of assets) { if (!asset) throw new Error('Build the signing client before serving private links'); hash.update(asset.body); }
+    return hash.digest('hex').slice(0, 16);
+  });
+}
 
 async function contractAsset(name: string): Promise<{ type: string; body: Uint8Array } | undefined> {
   if (name === 'contract.js') return { type: 'text/javascript; charset=utf-8', body: Buffer.from(CONTRACT_JS) };
   if (name === 'contract.css') return { type: 'text/css; charset=utf-8', body: Buffer.from(CONTRACT_CSS) };
-  const files: Record<string, string> = { 'sealform.js': 'text/javascript; charset=utf-8', 'sealform.css': 'text/css; charset=utf-8' };
+  const files: Record<string, string> = { 'sealform.js': 'text/javascript; charset=utf-8', 'sealform.css': 'text/css; charset=utf-8', 'sealform.js.LEGAL.txt': 'text/plain; charset=utf-8' };
   if (!files[name]) return undefined;
   // Built package: dist/server -> dist/client. Running from source: src/server -> dist/client.
   for (const relative of ['../client/', '../../dist/client/']) {

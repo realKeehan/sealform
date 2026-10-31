@@ -71,7 +71,7 @@ async function start(name: string, overrides: Partial<Parameters<typeof createSe
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const url = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
   const admin = sealform.admin!;
-  const owner = admin.createAccount({ email: 'owner@example.com', name: 'Olive Owner', role: 'owner', passwordHash: await hashPassword(PASSWORD), mustChangePassword: false, now: new Date(clock).toISOString() });
+  const owner = admin.accountByEmail('owner@example.com') ?? admin.createAccount({ email: 'owner@example.com', name: 'Olive Owner', role: 'owner', passwordHash: await hashPassword(PASSWORD), mustChangePassword: false, now: new Date(clock).toISOString() });
   return {
     sealform,
     admin,
@@ -230,6 +230,11 @@ test('an owner is forced to set up two-factor, and then must supply a fresh code
 
 async function ownerSession(app: App): Promise<Browser> {
   const browser = new Browser(app);
+  if (app.owner.totpSecret) {
+    clock += 30_000;
+    await browser.login('owner@example.com', PASSWORD, hotp(app.owner.totpSecret, Math.floor(clock / 30000)));
+    return browser;
+  }
   await browser.login('owner@example.com');
   const csrf = await browser.csrf();
   await browser.post('/account/2fa/start', { csrf });
@@ -1166,6 +1171,41 @@ test('parking holds the whole site behind a back-soon page while the signing API
   } finally {
     await second.stop();
   }
+});
+
+test('a separate static host gets an atomic parking flag and the signing hostname does not serve its pages', async () => {
+  const site = await makeSite('external-park');
+  const flag = join(site, '.sealform-parked');
+  const { access, readFile, unlink } = await import('node:fs/promises');
+  const app = await start('external-park', { site: { dir: site, serve: false, parkingFile: flag, publicUrl: 'https://studio.example.com', parkingAllow: ['/brand/', '/fonts/'] } });
+  try {
+    const owner = await ownerSession(app);
+    const csrf = await owner.csrf('/site');
+    assert.match((await owner.get('/site')).text, /Managing.*https:\/\/studio.example.com/);
+    assert.doesNotMatch((await owner.get('/site')).text, /Add or change a rule/);
+    assert.equal((await owner.post('/site/rules', { csrf, prefix: '/about', mode: 'hidden' })).status, 409);
+    assert.equal((await fetch(`${app.url}/about/`)).status, 404, 'the signing hostname must not duplicate the main site');
+    await assert.rejects(access(flag));
+    assert.equal((await owner.post('/site/parking', { csrf, parking: 'on' })).status, 303);
+    assert.equal(await readFile(flag, 'utf8'), 'parked\n');
+    assert.equal(app.admin.setting('parking'), 'on');
+    assert.equal((await fetch(`${app.url}/sealform/api/documents/example-agreement`)).status, 200);
+    await unlink(flag);
+  } finally { await app.stop(); }
+  const restarted = await start('external-park', { site: { dir: site, serve: false, parkingFile: flag } });
+  try {
+    assert.equal(await readFile(flag, 'utf8'), 'parked\n', 'startup restores the flag from the saved database state');
+    const owner = await ownerSession(restarted);
+    assert.equal((await owner.post('/site/parking', { csrf: await owner.csrf('/site'), parking: 'off' })).status, 303);
+    await assert.rejects(access(flag));
+    assert.equal(restarted.admin.setting('parking'), 'off');
+  } finally { await restarted.stop(); }
+  const broken = await start('external-park-error', { site: { dir: site, serve: false, parkingFile: join(site, 'missing', 'flag') } });
+  try {
+    const owner = await ownerSession(broken);
+    assert.equal((await owner.post('/site/parking', { csrf: await owner.csrf('/site'), parking: 'on' })).status, 500);
+    assert.notEqual(broken.admin.setting('parking'), 'on', 'the dashboard must not report success when the static host flag cannot be written');
+  } finally { await broken.stop(); }
 });
 
 test('a site with no dashboard still serves, and the Site page explains when there is no site', async () => {

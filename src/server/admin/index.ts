@@ -46,6 +46,7 @@ export interface AdminOptions {
   operatorProfile: LoadedProfile | undefined;
   /** Set when sealform also serves the website; the Site page manages it. */
   siteInfo: (() => ReturnType<SiteLayer['info']>) | undefined;
+  siteParking: ((on: boolean) => Promise<void>) | undefined;
   /** Where the public signing API is mounted, used to build private signing links. */
   signBase: string;
   mailer: Mailer;
@@ -697,6 +698,7 @@ export async function createAdmin(options: AdminOptions) {
       'Site',
       'site',
       html`<h1>Site</h1>
+      ${info?.publicUrl ? html`<p>Managing <a href="${info.publicUrl}">${info.publicUrl}</a>.</p>` : ''}
       ${error ? html`<p class="flash flash--error" role="alert">${error}</p>` : ''}
       ${info
         ? html`<section class="card">
@@ -705,7 +707,7 @@ export async function createAdmin(options: AdminOptions) {
         <form method="post" action="${base}/site/parking" class="inline">${csrf}<input type="hidden" name="parking" value="${parked ? 'off' : 'on'}"><button type="submit">${parked ? 'Open the site' : 'Park the site'}</button></form>
         <p class="muted">Stays reachable while parked: ${info.allow.map((p) => html`<code>${p}</code> `)}. The signing form, contract links and this dashboard are not part of the site and keep working. The parked page is <code>parked/index.html</code> in the site folder${info.hasParkedPage ? '' : ' (not found, so a plain built-in page is shown)'}.</p>
       </section>
-      <section class="card">
+      ${info.serving ? html`<section class="card">
         <h2>Hidden and private pages</h2>
         <p class="muted">A path covers everything under it. <strong>Hidden</strong> answers 404 to everyone. <strong>Private</strong> answers 404 unless you are signed in to this dashboard. The longest matching path wins.</p>
         ${db.siteRules().length === 0 ? html`<p class="muted">No rules yet. Every page of the site is public.</p>` : ''}
@@ -719,7 +721,7 @@ export async function createAdmin(options: AdminOptions) {
           <label>Mode <select name="mode"><option>hidden</option><option>private</option></select></label>
           <button type="submit">Add or change a rule</button>
         </form>
-      </section>
+      </section>` : html`<p class="muted">The main site is served by the static host. This dashboard controls its parking switch; page privacy rules are not available for that host.</p>`}
       <section class="card">
         <h2>Site info</h2>
         <dl class="facts">
@@ -743,15 +745,17 @@ export async function createAdmin(options: AdminOptions) {
     checkPost(ctx, form);
     if (action === 'parking') {
       const on = form.get('parking') === 'on';
-      db.saveSetting('parking', on ? 'on' : 'off');
+      await options.siteParking!(on);
       await audit(ctx, on ? 'site.park' : 'site.open', 'site');
     } else if (action === 'rules') {
+      if (!(await options.siteInfo()).serving) throw new HttpError(409, 'Page visibility rules require the site to be served by sealform');
       const prefix = normalizePrefix(form.get('prefix') ?? '');
       const mode = form.get('mode');
       if (!prefix || prefix === '/' || (mode !== 'hidden' && mode !== 'private')) return sitePage(ctx, 'Enter a path such as /press/internal/ and choose hidden or private. The whole site (/) cannot be hidden here; use parking.');
       db.setSiteRule(prefix, mode, ctx.account!.email, nowIso());
       await audit(ctx, 'site.rule.set', prefix, { mode });
     } else if (action === 'rules/delete') {
+      if (!(await options.siteInfo()).serving) throw new HttpError(409, 'Page visibility rules require the site to be served by sealform');
       const prefix = normalizePrefix(form.get('prefix') ?? '');
       if (!prefix || !db.deleteSiteRule(prefix)) throw new HttpError(404, 'No such rule');
       await audit(ctx, 'site.rule.delete', prefix);
