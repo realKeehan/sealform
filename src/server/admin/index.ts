@@ -770,7 +770,7 @@ export async function createAdmin(options: AdminOptions) {
   const EXPIRY_DAYS = [7, 14, 30, 60, 90];
   const countryNames = new Intl.DisplayNames(['en'], { type: 'region', fallback: 'code' });
 
-  const REVIEW_VIEWS = [1, 3, 5, 10, 25, 50];
+  const REVIEW_VIEWS = [1, 3, 5, 10, 15, 25, 50];
 
   function reviewState(link: ReviewLink): string {
     if (link.revokedAt) return 'cancelled';

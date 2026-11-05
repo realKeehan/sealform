@@ -165,7 +165,7 @@ Netherlands and Belgium. They are plain JSON, so adding a country is a file:
 To let someone read a document before they sign, make a **review link** from the same **Contracts** page. It
 shows one document (a draft is fine, even one with `[TO CONFIRM` markers) as read-only text under a banner
 saying it is a review copy and not signed. It has no signing form and no scripts. You choose the name shown
-on the page, the number of views (1 to 50), and an expiry (7 to 90 days). Each page load spends one view
+on the page, the number of views (1 to 50, including 15), and an expiry (7 to 90 days). Each page load spends one view
 atomically, so the limit cannot be beaten by opening it twice at once; a HEAD request spends none. You can
 cancel it at any time and it stops at once. Only a hash of the link is stored, it is shown once, and
 creating or cancelling one is written to the audit log. Email scanners and chat link previews can use up
