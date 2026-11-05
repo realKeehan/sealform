@@ -28,6 +28,9 @@ export interface EnvelopeRef {
   id: string;
   role: string;
   order: number;
+  /** A drawn countersignature binds the primary signer's sealed record. */
+  parentEnvelopeId?: string;
+  parentRecordHash?: string;
 }
 
 export interface SignatureEvidence {

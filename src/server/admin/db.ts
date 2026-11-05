@@ -137,6 +137,32 @@ CREATE TABLE IF NOT EXISTS envelopes (
   revoked_at TEXT,
   override_reason TEXT
 );
+CREATE TABLE IF NOT EXISTS review_links (
+  id TEXT PRIMARY KEY,
+  token_hash TEXT NOT NULL UNIQUE,
+  document_id TEXT NOT NULL,
+  document_version TEXT NOT NULL,
+  label TEXT NOT NULL,
+  recipient TEXT NOT NULL,
+  max_views INTEGER NOT NULL,
+  view_count INTEGER NOT NULL DEFAULT 0,
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  last_viewed_at TEXT,
+  revoked_at TEXT
+);
+CREATE TABLE IF NOT EXISTS envelope_counter_signers (
+  id TEXT PRIMARY KEY,
+  parent_id TEXT NOT NULL REFERENCES envelopes(id),
+  position INTEGER NOT NULL,
+  signer_name TEXT NOT NULL,
+  signer_email TEXT NOT NULL,
+  signer_country TEXT,
+  child_id TEXT UNIQUE REFERENCES envelopes(id),
+  UNIQUE(parent_id, position),
+  UNIQUE(parent_id, signer_email)
+);
 CREATE TABLE IF NOT EXISTS document_status (
   document_id TEXT NOT NULL,
   version TEXT NOT NULL,
@@ -397,10 +423,94 @@ export class AdminStore {
     return Number(this.db.prepare("UPDATE envelopes SET status = 'revoked', revoked_at = ? WHERE id = ? AND status IN ('open', 'signing')").run(at, id).changes) === 1;
   }
 
+  // Review links (view-only, no signing) ---------------------------------------------------------
+
+  createReviewLink(input: { tokenHash: string; documentId: string; documentVersion: string; label: string; recipient: string; maxViews: number; createdBy: string; createdAt: string; expiresAt: string }): ReviewLink {
+    const id = prefixedId('rev');
+    this.db
+      .prepare('INSERT INTO review_links (id, token_hash, document_id, document_version, label, recipient, max_views, created_by, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(id, input.tokenHash, input.documentId, input.documentVersion, input.label, input.recipient, input.maxViews, input.createdBy, input.createdAt, input.expiresAt);
+    return this.reviewLink(id)!;
+  }
+
+  reviewLink(id: string): ReviewLink | undefined {
+    return toReviewLink(this.db.prepare('SELECT * FROM review_links WHERE id = ?').get(id));
+  }
+
+  reviewLinkByTokenHash(tokenHash: string): ReviewLink | undefined {
+    return toReviewLink(this.db.prepare('SELECT * FROM review_links WHERE token_hash = ?').get(tokenHash));
+  }
+
+  reviewLinks(): ReviewLink[] {
+    return (this.db.prepare('SELECT * FROM review_links ORDER BY created_at DESC').all() as unknown[]).map((row) => toReviewLink(row)!);
+  }
+
+  /** Spends one view atomically. False when the link is revoked, expired or out of views. */
+  recordReviewView(id: string, now: string): boolean {
+    return (
+      Number(
+        this.db
+          .prepare('UPDATE review_links SET view_count = view_count + 1, last_viewed_at = ? WHERE id = ? AND revoked_at IS NULL AND expires_at > ? AND view_count < max_views')
+          .run(now, id, now).changes,
+      ) === 1
+    );
+  }
+
+  revokeReviewLink(id: string, at: string): boolean {
+    return Number(this.db.prepare('UPDATE review_links SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL').run(at, id).changes) === 1;
+  }
+
   countersignEnvelope(id: string, by: string, at: string, finalHash: string): boolean {
     return (
       Number(this.db.prepare("UPDATE envelopes SET status = 'complete', countersigned_by = ?, countersigned_at = ?, final_hash = ? WHERE id = ? AND status = 'awaiting-countersignature'").run(by, at, finalHash, id).changes) === 1
     );
+  }
+
+  counterSigners(parentId: string): CounterSigner[] {
+    return (this.db.prepare('SELECT * FROM envelope_counter_signers WHERE parent_id = ? ORDER BY position').all(parentId) as Record<string, unknown>[]).map((r) => ({
+      id: r.id as string, parentId: r.parent_id as string, position: r.position as number,
+      name: r.signer_name as string, email: r.signer_email as string, country: r.signer_country as string | null, childId: r.child_id as string | null,
+    }));
+  }
+
+  counterSignerForChild(childId: string): CounterSigner | undefined {
+    const row = this.db.prepare('SELECT parent_id FROM envelope_counter_signers WHERE child_id = ?').get(childId) as { parent_id: string } | undefined;
+    return row ? this.counterSigners(row.parent_id).find((s) => s.childId === childId) : undefined;
+  }
+
+  configureCounterSigners(parentId: string, signers: { name: string; email: string; country: string | null }[]): void {
+    const parent = this.envelope(parentId);
+    if (!parent?.counterRequired || !['open', 'awaiting-countersignature'].includes(parent.status)) throw new Error('This contract cannot configure Studio signers');
+    if (this.counterSigners(parentId).length) throw new Error('Studio signers are already fixed for this contract');
+    if (signers.length < 1 || signers.length > 2 || new Set(signers.map((s) => s.email)).size !== signers.length) throw new Error('One or two distinct Studio signers are required');
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      for (const [position, signer] of signers.entries()) this.db.prepare('INSERT INTO envelope_counter_signers (id,parent_id,position,signer_name,signer_email,signer_country) VALUES (?,?,?,?,?,?)').run(prefixedId('party'), parentId, position, signer.name, signer.email, signer.country);
+      this.db.exec('COMMIT');
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+  }
+
+  attachCounterLink(partyId: string, childId: string, at: string): boolean {
+    const row = this.db.prepare('SELECT parent_id, child_id FROM envelope_counter_signers WHERE id = ?').get(partyId) as { parent_id: string; child_id: string | null } | undefined;
+    if (!row) return false;
+    const parent = this.envelope(row.parent_id);
+    const party = this.counterSigners(row.parent_id).find((p) => p.id === partyId)!;
+    const child = this.envelope(childId);
+    const previous = row.child_id ? this.envelope(row.child_id) : undefined;
+    if (parent?.status !== 'awaiting-countersignature' || !child || child.counterRequired || child.status !== 'open' || child.documentId !== parent.documentId || child.documentVersion !== parent.documentVersion || child.signerName !== party.name || child.signerEmail !== party.email || child.signerCountry !== party.country || previous?.status === 'complete' || previous?.status === 'signing') return false;
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      if (previous?.status === 'open') this.revokeEnvelope(previous.id, at);
+      this.db.prepare('UPDATE envelope_counter_signers SET child_id = ? WHERE id = ?').run(childId, partyId);
+      this.db.exec('COMMIT');
+      return true;
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+  }
+
+  completeDrawnCountersignatures(parentId: string, by: string, at: string, finalHash: string): boolean {
+    const signers = this.counterSigners(parentId);
+    if (!signers.length || signers.some((s) => { const child = s.childId ? this.envelope(s.childId) : undefined; return child?.status !== 'complete' || !child.recordId || !child.recordHash; })) return false;
+    return this.countersignEnvelope(parentId, by, at, finalHash);
   }
 
   // Document status ------------------------------------------------------------------------------
@@ -463,6 +573,8 @@ export class AdminStore {
   }
 }
 
+export interface CounterSigner { id: string; parentId: string; position: number; name: string; email: string; country: string | null; childId: string | null }
+
 export type EnvelopeStatus = 'open' | 'signing' | 'awaiting-countersignature' | 'complete' | 'revoked';
 
 export interface Envelope {
@@ -486,6 +598,40 @@ export interface Envelope {
   finalHash: string | null;
   revokedAt: string | null;
   overrideReason: string | null;
+}
+
+export interface ReviewLink {
+  id: string;
+  documentId: string;
+  documentVersion: string;
+  label: string;
+  recipient: string;
+  maxViews: number;
+  viewCount: number;
+  createdBy: string;
+  createdAt: string;
+  expiresAt: string;
+  lastViewedAt: string | null;
+  revokedAt: string | null;
+}
+
+function toReviewLink(row: unknown): ReviewLink | undefined {
+  if (!row) return undefined;
+  const r = row as Record<string, unknown>;
+  return {
+    id: r.id as string,
+    documentId: r.document_id as string,
+    documentVersion: r.document_version as string,
+    label: r.label as string,
+    recipient: r.recipient as string,
+    maxViews: r.max_views as number,
+    viewCount: r.view_count as number,
+    createdBy: r.created_by as string,
+    createdAt: r.created_at as string,
+    expiresAt: r.expires_at as string,
+    lastViewedAt: (r.last_viewed_at as string | null) ?? null,
+    revokedAt: (r.revoked_at as string | null) ?? null,
+  };
 }
 
 function toEnvelope(row: unknown): Envelope | undefined {

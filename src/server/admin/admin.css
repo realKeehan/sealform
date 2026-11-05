@@ -362,3 +362,22 @@ ol {
     filter: brightness(1.1);
   }
 }
+
+/* Keep document previews readable without running client scripts. */
+.doc-preview {
+  max-width: 76ch;
+  overflow-wrap: anywhere;
+  line-height: 1.65;
+}
+.doc-preview h3, .doc-preview h4, .doc-preview h5, .doc-preview h6 {
+  margin: 1.5rem 0 0.5rem;
+  line-height: 1.3;
+  font-weight: 700;
+}
+.doc-preview h3 { font-size: 1.4rem; }
+.doc-preview h4 { font-size: 1.2rem; }
+.doc-preview h5, .doc-preview h6 { font-size: 1.05rem; }
+.doc-preview p, .doc-preview ul, .doc-preview ol { margin: 0 0 0.8rem; }
+.doc-preview ul, .doc-preview ol { padding-left: 1.5em; }
+.doc-preview li + li { margin-top: 0.25rem; }
+.doc-preview + details { margin-top: 1.5rem; }

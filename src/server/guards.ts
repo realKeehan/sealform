@@ -18,13 +18,15 @@ export class TurnstileCheck implements BotCheck {
   readonly name = 'turnstile';
   private readonly secret: string;
   private readonly fetchImpl: typeof fetch;
-  private readonly expectedHostname: string | undefined;
+  private readonly expectedHostnames: ReadonlySet<string> | undefined;
+  private readonly expectedAction: string | undefined;
 
-  constructor(secret: string, fetchImpl: typeof fetch = fetch, expectedHostname?: string) {
+  constructor(secret: string, fetchImpl: typeof fetch = fetch, expectedHostname?: string | readonly string[], expectedAction?: string) {
     if (!secret) throw new Error('TurnstileCheck needs a secret key');
     this.secret = secret;
     this.fetchImpl = fetchImpl;
-    this.expectedHostname = expectedHostname;
+    this.expectedHostnames = expectedHostname === undefined ? undefined : new Set(typeof expectedHostname === 'string' ? [expectedHostname] : expectedHostname);
+    this.expectedAction = expectedAction;
   }
 
   async verify(token: string | undefined, ip: string): Promise<boolean> {
@@ -37,9 +39,10 @@ export class TurnstileCheck implements BotCheck {
         signal: AbortSignal.timeout(8000),
       });
       if (!response.ok) return false;
-      const result = (await response.json()) as { success?: boolean; hostname?: string };
+      const result = (await response.json()) as { success?: boolean; hostname?: string; action?: string };
       if (result.success !== true) return false;
-      return !this.expectedHostname || result.hostname === this.expectedHostname;
+      if (this.expectedHostnames && (!result.hostname || !this.expectedHostnames.has(result.hostname))) return false;
+      return this.expectedAction === undefined || result.action === this.expectedAction;
     } catch {
       return false;
     }

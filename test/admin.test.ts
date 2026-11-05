@@ -71,7 +71,7 @@ async function start(name: string, overrides: Partial<Parameters<typeof createSe
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const url = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
   const admin = sealform.admin!;
-  const owner = admin.createAccount({ email: 'owner@example.com', name: 'Olive Owner', role: 'owner', passwordHash: await hashPassword(PASSWORD), mustChangePassword: false, now: new Date(clock).toISOString() });
+  const owner = admin.accountByEmail('owner@example.com') ?? admin.createAccount({ email: 'owner@example.com', name: 'Olive Owner', role: 'owner', passwordHash: await hashPassword(PASSWORD), mustChangePassword: false, now: new Date(clock).toISOString() });
   return {
     sealform,
     admin,
@@ -230,6 +230,11 @@ test('an owner is forced to set up two-factor, and then must supply a fresh code
 
 async function ownerSession(app: App): Promise<Browser> {
   const browser = new Browser(app);
+  if (app.owner.totpSecret) {
+    clock += 30_000;
+    await browser.login('owner@example.com', PASSWORD, hotp(app.owner.totpSecret, Math.floor(clock / 30000)));
+    return browser;
+  }
   await browser.login('owner@example.com');
   const csrf = await browser.csrf();
   await browser.post('/account/2fa/start', { csrf });
@@ -448,6 +453,14 @@ test('publishing a document version closes the previous one, and the status surv
     const csrf = await owner.csrf('/documents');
     const list = await owner.get('/documents');
     assert.match(list.text, /Example Participation Agreement/);
+    const preview = await owner.get('/documents/example-agreement/EXAMPLE-1');
+    assert.equal(preview.status, 200);
+    assert.equal(preview.headers.get('cache-control'), 'no-store, no-transform');
+    assert.match(preview.text, /<article class="doc-preview" lang="en">/);
+    assert.match(preview.text, /<h4>Confidentiality<\/h4>/);
+    assert.match(preview.text, /<strong>unreleased material<\/strong>/);
+    assert.match(preview.text, /<ul><li>First point<\/li><li>Second point<\/li><\/ul>/);
+    assert.match(preview.text, /<details><summary>View exact Markdown source<\/summary><pre class="doc-text"># Example Participation Agreement/);
 
     const close = await owner.post('/documents/example-agreement/EXAMPLE-1/status', { csrf, status: 'closed' });
     assert.equal(close.location, `${BASE}/documents/example-agreement/EXAMPLE-1?m=saved`);
@@ -822,7 +835,7 @@ async function signLink(app: App, token: string, overrides: Record<string, unkno
   });
 }
 
-test('a private link is created once, signs exactly once, and is countersigned from the dashboard', async () => {
+test('a private link signs once and requires a separate drawn Studio signature', async () => {
   const app = await start('contracts');
   try {
     const owner = await ownerSession(app);
@@ -866,21 +879,34 @@ test('a private link is created once, signs exactly once, and is countersigned f
     assert.equal((await fetch(`${app.url}/sealform/api/envelopes/${token}`)).status, 409);
     assert.equal((await signLink(app, token!)).status, 409);
 
-    // Countersign: sealed into the audit log, confirmed to the signer by email.
+    // A dashboard click only makes a link; the Studio signer must draw independently.
     const detail = await owner.get(`/contracts/${env.id}`);
-    assert.match(detail.text, /Countersign as owner@example.com/);
-    const done = await owner.post(`/contracts/${env.id}/countersign`, { csrf });
-    assert.equal(done.location, `${BASE}/contracts/${env.id}?m=saved`);
+    assert.match(detail.text, /Create signing link/);
+    assert.equal((await owner.post(`/contracts/${env.id}/countersign`, { csrf })).status, 400);
+    const party = app.admin.counterSigners(env.id)[0]!;
+    const link = await owner.post(`/contracts/${env.id}/countersign`, { csrf, party: party.id });
+    assert.equal(link.status, 200);
+    const childToken = /\/sealform\/c\/([A-Za-z0-9_-]{43})</.exec(link.text)![1]!;
+    assert.equal(app.admin.envelope(env.id)!.status, 'awaiting-countersignature');
+    const childSigned = await signLink(app, childToken, {
+      fields: { legalName: party.name, email: party.email, country: 'DE' },
+      signature: { typedName: party.name, vector: [{ points: stroke() }], png: png() },
+    });
+    assert.equal(childSigned.status, 201, await childSigned.clone().text());
+    const childRecord = app.sealform.store.getEntry(((await childSigned.json()) as { id: string }).id) as SealformRecord;
+    assert.deepEqual(childRecord.envelope, { id: party.childId ?? app.admin.counterSigners(env.id)[0]!.childId, role: 'countersigner', order: 2, parentEnvelopeId: env.id, parentRecordHash: record.hash });
     const finished = app.admin.envelope(env.id)!;
     assert.equal(finished.status, 'complete');
     assert.equal(finished.countersignedBy, 'owner@example.com');
     assert.match(finished.finalHash!, /^[0-9a-f]{64}$/);
     assert.notEqual(finished.finalHash, record.hash);
-    assert.equal((await owner.post(`/contracts/${env.id}/countersign`, { csrf })).status, 409, 'cannot countersign twice');
+    assert.equal((await owner.post(`/contracts/${env.id}/countersign`, { csrf, party: party.id })).status, 409);
+    assert.equal((await signLink(app, childToken)).status, 409, 'Studio link cannot sign twice');
 
     const audit = app.admin.auditEntries().filter((e) => e.action.startsWith('envelope.'));
-    assert.deepEqual(audit.map((e) => e.action), ['envelope.create', 'envelope.countersign']);
-    assert.equal(audit[1]!.details.recordHash, record.hash);
+    assert.deepEqual(audit.map((e) => e.action), ['envelope.create', 'envelope.counter-link', 'envelope.countersign']);
+    assert.equal(audit[2]!.details.recordHash, record.hash);
+    assert.equal(audit[2]!.details.drawnSignatures, true);
     assert.equal((await verifyChain(app.admin.auditEntries(), keyset)).ok, true);
     await new Promise((resolve) => setTimeout(resolve, 80));
     const { readdir, readFile } = await import('node:fs/promises');
@@ -890,6 +916,52 @@ test('a private link is created once, signs exactly once, and is countersigned f
   } finally {
     await app.stop();
   }
+});
+
+test('both named Studio parties must draw signatures, with replaceable unused links and the original closed version', async () => {
+  const docs = join(dir, 'docs-two-studio');
+  const { cp, readFile, writeFile } = await import('node:fs/promises');
+  await cp(FIXTURES, docs, { recursive: true });
+  const manifestPath = join(docs, 'partner-contract', 'PARTNER-1', 'document.json');
+  const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+  manifest.requiredCounterSigners = ['Olive Owner', 'Sam Studio'];
+  await writeFile(manifestPath, JSON.stringify(manifest));
+  const app = await start('two-studio', { documentsDir: docs });
+  try {
+    const owner = await ownerSession(app);
+    assert.equal((await createLink(owner, { counter: '' })).response.status, 400);
+    assert.equal((await createLink(owner)).response.status, 400, 'cannot omit the second named party');
+    const created = await createLink(owner, { counter2Name: 'Sam Studio', counter2Email: 'sam@example.com', counter2Country: 'DE' });
+    assert.equal(created.response.status, 200);
+    const parent = app.admin.envelopes()[0]!;
+    const parties = app.admin.counterSigners(parent.id);
+    assert.equal(parties.length, 2);
+    assert.equal((await signLink(app, created.token!)).status, 201);
+    const originalHash = app.admin.envelope(parent.id)!.recordHash;
+    const make = async (party: typeof parties[number]) => {
+      const response = await owner.post(`/contracts/${parent.id}/countersign`, { csrf: created.csrf, party: party.id });
+      assert.equal(response.status, 200, response.text);
+      return /\/sealform\/c\/([A-Za-z0-9_-]{43})</.exec(response.text)![1]!;
+    };
+    const obsolete = await make(parties[0]!);
+    const first = await make(parties[0]!);
+    assert.equal((await signLink(app, obsolete)).status, 410, 'replacing a link revokes the previous token');
+    const second = await make(parties[1]!);
+    assert.equal((await owner.post(`/contracts/${parent.id}/configure-countersigners`, { csrf: created.csrf })).status, 409, 'signer identities cannot be replaced after signing');
+    app.sealform.documents.setStatus('partner-contract', 'PARTNER-1', 'closed');
+    for (const [i, token] of [first, second].entries()) {
+      const party = parties[i]!;
+      assert.equal((await signLink(app, token)).status, 422, 'another identity cannot use a Studio link');
+      const signed = await signLink(app, token, { fields: { legalName: party.name, email: party.email, country: 'DE' }, signature: { typedName: party.name, vector: [{ points: stroke() }], png: png() } });
+      assert.equal(signed.status, 201, await signed.clone().text());
+      const record = app.sealform.store.getEntry(((await signed.json()) as { id: string }).id) as SealformRecord;
+      assert.equal(record.envelope!.parentRecordHash, originalHash);
+      assert.equal(record.envelope!.order, i + 2);
+      assert.equal(app.admin.envelope(parent.id)!.status, i === 0 ? 'awaiting-countersignature' : 'complete');
+    }
+    assert.equal((await verifyChain(app.sealform.store.entries(), keyset)).ok, true);
+    assert.equal((await verifyChain(app.admin.auditEntries(), keyset)).ok, true);
+  } finally { await app.stop(); }
 });
 
 test('a link without countersignature completes on signing; cancelled and expired links stop working', async () => {
@@ -1101,6 +1173,41 @@ test('parking holds the whole site behind a back-soon page while the signing API
   }
 });
 
+test('a separate static host gets an atomic parking flag and the signing hostname does not serve its pages', async () => {
+  const site = await makeSite('external-park');
+  const flag = join(site, '.sealform-parked');
+  const { access, readFile, unlink } = await import('node:fs/promises');
+  const app = await start('external-park', { site: { dir: site, serve: false, parkingFile: flag, publicUrl: 'https://studio.example.com', parkingAllow: ['/brand/', '/fonts/'] } });
+  try {
+    const owner = await ownerSession(app);
+    const csrf = await owner.csrf('/site');
+    assert.match((await owner.get('/site')).text, /Managing.*https:\/\/studio.example.com/);
+    assert.doesNotMatch((await owner.get('/site')).text, /Add or change a rule/);
+    assert.equal((await owner.post('/site/rules', { csrf, prefix: '/about', mode: 'hidden' })).status, 409);
+    assert.equal((await fetch(`${app.url}/about/`)).status, 404, 'the signing hostname must not duplicate the main site');
+    await assert.rejects(access(flag));
+    assert.equal((await owner.post('/site/parking', { csrf, parking: 'on' })).status, 303);
+    assert.equal(await readFile(flag, 'utf8'), 'parked\n');
+    assert.equal(app.admin.setting('parking'), 'on');
+    assert.equal((await fetch(`${app.url}/sealform/api/documents/example-agreement`)).status, 200);
+    await unlink(flag);
+  } finally { await app.stop(); }
+  const restarted = await start('external-park', { site: { dir: site, serve: false, parkingFile: flag } });
+  try {
+    assert.equal(await readFile(flag, 'utf8'), 'parked\n', 'startup restores the flag from the saved database state');
+    const owner = await ownerSession(restarted);
+    assert.equal((await owner.post('/site/parking', { csrf: await owner.csrf('/site'), parking: 'off' })).status, 303);
+    await assert.rejects(access(flag));
+    assert.equal(restarted.admin.setting('parking'), 'off');
+  } finally { await restarted.stop(); }
+  const broken = await start('external-park-error', { site: { dir: site, serve: false, parkingFile: join(site, 'missing', 'flag') } });
+  try {
+    const owner = await ownerSession(broken);
+    assert.equal((await owner.post('/site/parking', { csrf: await owner.csrf('/site'), parking: 'on' })).status, 500);
+    assert.notEqual(broken.admin.setting('parking'), 'on', 'the dashboard must not report success when the static host flag cannot be written');
+  } finally { await broken.stop(); }
+});
+
 test('a site with no dashboard still serves, and the Site page explains when there is no site', async () => {
   const site = await makeSite('plain');
   const sealform = await createSealform({ dataDir: join(dir, 'site-plain'), documentsDir: FIXTURES, sealingKey: privateFile, keySet: keyset, publicOrigin: ORIGIN, operator: { name: 'E', email: 'e@example.com' }, site: { dir: site }, log: () => {} });
@@ -1235,6 +1342,79 @@ test('with the dashboard mounted at /login, that address is the sign-in and fail
     assert.equal((await call('/login/login')).status, 404, 'the retired /login/login address is deleted');
     assert.equal((await call('/login/login/2fa')).status, 404);
     assert.equal((await fetch(`${app.url}/sealform/api/documents/example-agreement`)).status, 200, 'the signing API is unaffected');
+  } finally {
+    await app.stop();
+  }
+});
+
+// Review links ----------------------------------------------------------------------------------------
+
+test('a review link is view only, counts views, expires and can be cancelled', async () => {
+  const app = await start('review-links');
+  try {
+    const owner = await ownerSession(app);
+    const csrf = await owner.csrf('/contracts');
+    const make = async (fields: Record<string, string> = {}) => {
+      const response = await owner.post('/review-links', { csrf, document: 'partner-contract@PARTNER-1', label: 'Draft for Fio', recipient: 'Fiorella Arce', days: '7', views: '3', ...fields });
+      return { response, token: /\/sealform\/r\/([A-Za-z0-9_-]{43})</.exec(response.text)?.[1] };
+    };
+    const { response, token } = await make();
+    assert.equal(response.status, 200);
+    assert.ok(token, 'the link is shown on creation');
+    assert.equal(JSON.stringify(app.admin.reviewLinks()).includes(token), false, 'only a hash of the token is stored');
+
+    const open = await fetch(`${app.url}/sealform/r/${token}`);
+    assert.equal(open.status, 200);
+    const text = await open.text();
+    assert.match(text, /Review copy\. View only, not signed/);
+    assert.match(text, /Fiorella Arce/);
+    assert.doesNotMatch(text, /<script|<form|data-token/);
+    assert.doesNotMatch(text, /<body class="draft">/, 'a published document is not watermarked');
+    assert.match(await (await fetch(`${app.url}/sealform/assets/review.css`)).text(), /DRAFT/);
+    assert.match(open.headers.get('content-security-policy')!, /default-src 'none'; style-src 'self'/);
+    assert.equal(open.headers.get('cache-control'), 'no-store');
+    assert.equal((await fetch(`${app.url}/sealform/assets/review.css`)).status, 200);
+    assert.equal(app.admin.reviewLinks()[0]!.viewCount, 1);
+
+    // HEAD does not spend a view; GET spends one each; the limit is hard.
+    assert.equal((await fetch(`${app.url}/sealform/r/${token}`, { method: 'HEAD' })).status, 200);
+    assert.equal(app.admin.reviewLinks()[0]!.viewCount, 1);
+    assert.equal((await fetch(`${app.url}/sealform/r/${token}`)).status, 200);
+    assert.equal((await fetch(`${app.url}/sealform/r/${token}`)).status, 200);
+    assert.equal((await fetch(`${app.url}/sealform/r/${token}`)).status, 410, 'out of views');
+    assert.equal(app.admin.reviewLinks()[0]!.viewCount, 3);
+
+    // A draft carries the watermark class.
+    app.sealform.documents.setStatus('partner-contract', 'PARTNER-1', 'draft');
+    const draftToken = (await make({ views: '5' })).token!;
+    const draftPage = await (await fetch(`${app.url}/sealform/r/${draftToken}`)).text();
+    assert.match(draftPage, /<body class="draft">/);
+    assert.match(draftPage, /This is a draft and its terms may still change/);
+
+    // A review link is not a signing link.
+    assert.equal((await fetch(`${app.url}/sealform/api/envelopes/${token}`)).status, 404);
+    assert.equal((await fetch(`${app.url}/sealform/r/${'A'.repeat(43)}`)).status, 404);
+
+    // Cancel works at once, and the dashboard shows it.
+    const second = (await make({ views: '10' })).token!;
+    assert.equal((await fetch(`${app.url}/sealform/r/${second}`)).status, 200);
+    const id = app.admin.reviewLinks().find((l) => l.maxViews === 10)!.id;
+    const revoked = await owner.post(`/review-links/${id}/revoke`, { csrf });
+    assert.equal(revoked.status, 303);
+    assert.equal((await fetch(`${app.url}/sealform/r/${second}`)).status, 410);
+    assert.equal((await owner.post(`/review-links/${id}/revoke`, { csrf })).status, 409, 'already cancelled');
+    assert.match((await owner.get('/contracts')).text, /cancelled/);
+
+    // Bad input is refused and the actions are audited.
+    assert.equal((await make({ views: '9999' })).response.status, 400);
+    assert.equal((await make({ document: 'nope@1' })).response.status, 400);
+    const actions = app.admin.auditEntries().map((e) => e.action);
+    assert.ok(actions.includes('review-link.create') && actions.includes('review-link.revoke'));
+
+    // Expiry.
+    const third = (await make({ days: '7' })).token!;
+    clock += 8 * 86_400_000;
+    assert.equal((await fetch(`${app.url}/sealform/r/${third}`)).status, 410);
   } finally {
     await app.stop();
   }

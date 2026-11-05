@@ -243,6 +243,10 @@ from the public site, `noindex` and `frame-ancestors 'none'`.
   Optional operator countersignature as the last step. Each signer's record carries the envelope; a
   final envelope record lists all signer hashes and is sealed. Links can be revoked. Envelope documents
   are never listed publicly.
+- **Review links:** a read-only page for one document version at `{base}/r/<token>`. The token is stored
+  hashed, with a view cap (atomic `UPDATE ... WHERE view_count < max_views`), an expiry and revocation.
+  GET spends a view, HEAD does not. The page has a stylesheet only (CSP `default-src 'none'; style-src 'self'`),
+  `no-store`, `noindex`, and no signing capability. Create and revoke are audited.
 - **Site controls:** see below.
 
 The dashboard is plain TypeScript and SCSS bundled by esbuild, rendered from templates in the package.
