@@ -22,13 +22,14 @@ h1{font-size:1.6rem;line-height:1.25;margin:0 0 .5rem}
 article h3,article h4,article h5,article h6{margin:1.6rem 0 .4rem;line-height:1.3}
 article p,article li{margin:.5rem 0}
 .stop{max-width:32rem;margin:15vh auto;padding:0 1rem;text-align:center}
+body.draft::after{content:"";position:fixed;inset:0;pointer-events:none;z-index:10;background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='360' height='260'><text x='180' y='130' text-anchor='middle' transform='rotate(-30 180 130)' font-family='Arial,sans-serif' font-size='44' font-weight='700' fill='%23b00020' fill-opacity='0.13'>DRAFT</text></svg>")}
 @media print{.banner{border-color:#000}}
 `;
 
 export function reviewPage(base: string, link: ReviewLink, doc: LoadedDocument, lang: string, status: string, viewsLeft: number, revision: string): string {
   const text = doc.texts.get(lang) ?? doc.texts.get(doc.manifest.governingLang)!;
   const others = [...doc.texts.keys()].filter((l) => l !== text.lang);
-  return `<!doctype html><html lang="${escape(text.lang)}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex, nofollow"><link rel="icon" href="data:,"><title>Review copy: ${escape(doc.manifest.title)}</title><link rel="stylesheet" href="${base}/assets/review.css?v=${revision}"></head><body><main>
+  return `<!doctype html><html lang="${escape(text.lang)}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex, nofollow"><link rel="icon" href="data:,"><title>Review copy: ${escape(doc.manifest.title)}</title><link rel="stylesheet" href="${base}/assets/review.css?v=${revision}"></head><body${status === 'draft' ? ' class="draft"' : ''}><main>
 <div class="banner"><strong>Review copy. View only, not signed.</strong>Reading this does not sign or accept anything. This link is private to ${escape(link.recipient)}. Please do not forward it; it stops working after ${viewsLeft} more ${viewsLeft === 1 ? 'view' : 'views'} or on ${escape(link.expiresAt.slice(0, 10))}, or sooner if the sender cancels it.${status === 'draft' ? ' This is a draft and its terms may still change.' : ''}</div>
 <h1>${escape(doc.manifest.title)}</h1>
 <p class="meta"><span>${escape(doc.manifest.id)} version ${escape(doc.manifest.version)}</span><span>Status: ${escape(status)}</span><span>Text SHA-256: ${escape(text.sha256.slice(0, 16))}</span>${others.map((l) => `<span><a href="?lang=${escape(l)}">${escape(l)}</a></span>`).join('')}</p>

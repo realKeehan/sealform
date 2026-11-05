@@ -1369,6 +1369,8 @@ test('a review link is view only, counts views, expires and can be cancelled', a
     assert.match(text, /Review copy\. View only, not signed/);
     assert.match(text, /Fiorella Arce/);
     assert.doesNotMatch(text, /<script|<form|data-token/);
+    assert.doesNotMatch(text, /<body class="draft">/, 'a published document is not watermarked');
+    assert.match(await (await fetch(`${app.url}/sealform/assets/review.css`)).text(), /DRAFT/);
     assert.match(open.headers.get('content-security-policy')!, /default-src 'none'; style-src 'self'/);
     assert.equal(open.headers.get('cache-control'), 'no-store');
     assert.equal((await fetch(`${app.url}/sealform/assets/review.css`)).status, 200);
@@ -1382,14 +1384,21 @@ test('a review link is view only, counts views, expires and can be cancelled', a
     assert.equal((await fetch(`${app.url}/sealform/r/${token}`)).status, 410, 'out of views');
     assert.equal(app.admin.reviewLinks()[0]!.viewCount, 3);
 
+    // A draft carries the watermark class.
+    app.sealform.documents.setStatus('partner-contract', 'PARTNER-1', 'draft');
+    const draftToken = (await make({ views: '5' })).token!;
+    const draftPage = await (await fetch(`${app.url}/sealform/r/${draftToken}`)).text();
+    assert.match(draftPage, /<body class="draft">/);
+    assert.match(draftPage, /This is a draft and its terms may still change/);
+
     // A review link is not a signing link.
     assert.equal((await fetch(`${app.url}/sealform/api/envelopes/${token}`)).status, 404);
     assert.equal((await fetch(`${app.url}/sealform/r/${'A'.repeat(43)}`)).status, 404);
 
     // Cancel works at once, and the dashboard shows it.
-    const second = (await make()).token!;
+    const second = (await make({ views: '10' })).token!;
     assert.equal((await fetch(`${app.url}/sealform/r/${second}`)).status, 200);
-    const id = app.admin.reviewLinks().find((l) => l.viewCount === 1)!.id;
+    const id = app.admin.reviewLinks().find((l) => l.maxViews === 10)!.id;
     const revoked = await owner.post(`/review-links/${id}/revoke`, { csrf });
     assert.equal(revoked.status, 303);
     assert.equal((await fetch(`${app.url}/sealform/r/${second}`)).status, 410);
