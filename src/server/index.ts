@@ -37,6 +37,7 @@ import { CloudflareAccess, type AccessConfig } from './admin/access.ts';
 import type { Envelope } from './admin/db.ts';
 import { createAdmin } from './admin/index.ts';
 import { renderCertificate } from './pdf.ts';
+import { REVIEW_CSS, REVIEW_HEADERS, reviewPage, reviewStopPage } from './review.ts';
 import { ProfileRegistry, signerVisible as profileVisible } from './profiles.ts';
 import { SiteLayer, type SiteConfig } from './site.ts';
 import { AdminStore } from './admin/db.ts';
@@ -431,7 +432,31 @@ export async function createSealform(config: SealformConfig): Promise<Sealform> 
       sendBytes(res, 200, 'text/html; charset=utf-8', Buffer.from(await contractPage(base, contract[1]!)), CONTRACT_HEADERS);
       return true;
     }
+    const review = new RegExp(`^${base.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/r/([A-Za-z0-9_-]{43})$`).exec(path);
+    if (admin && review && (req.method === 'GET' || req.method === 'HEAD')) {
+      limit(readLimiter, `read:${ip}`);
+      const rev = String(REVIEW_CSS.length);
+      const stop = (code: number, message: string) => sendBytes(res, code, 'text/html; charset=utf-8', Buffer.from(reviewStopPage(base, message, rev)), REVIEW_HEADERS);
+      const link = admin.db.reviewLinkByTokenHash(hashToken(review[1]!));
+      if (!link) { stop(404, 'This review link is not valid.'); return true; }
+      const at = now().toISOString();
+      if (link.revokedAt) { stop(410, 'This review link was cancelled. Ask the sender for a new one.'); return true; }
+      if (link.expiresAt <= at) { stop(410, 'This review link has expired. Ask the sender for a new one.'); return true; }
+      if (link.viewCount >= link.maxViews) { stop(410, 'This review link has used all of its views. Ask the sender for a new one.'); return true; }
+      const doc = documents.get(link.documentId, link.documentVersion);
+      if (!doc) { stop(404, 'The document for this link is no longer available.'); return true; }
+      // HEAD never spends a view. A GET spends one atomically, so concurrent opens cannot exceed the limit.
+      if (req.method === 'GET' && !admin.db.recordReviewView(link.id, at)) { stop(410, 'This review link is no longer available.'); return true; }
+      const used = link.viewCount + (req.method === 'GET' ? 1 : 0);
+      const body = reviewPage(base, link, doc, url.searchParams.get('lang') ?? doc.manifest.governingLang, documents.status(doc), link.maxViews - used, rev);
+      sendBytes(res, 200, 'text/html; charset=utf-8', Buffer.from(body), REVIEW_HEADERS);
+      return true;
+    }
     if (admin && req.method === 'GET' && path.startsWith(`${base}/assets/`)) {
+      if (path === `${base}/assets/review.css`) {
+        sendBytes(res, 200, 'text/css; charset=utf-8', Buffer.from(REVIEW_CSS), { ...REVIEW_HEADERS, 'cache-control': 'public, max-age=300' });
+        return true;
+      }
       const asset = await contractAsset(path.slice(`${base}/assets/`.length));
       if (!asset) throw new HttpError(404, 'Not found');
       sendBytes(res, 200, asset.type, asset.body, { ...CONTRACT_HEADERS, 'cache-control': 'public, max-age=300' });

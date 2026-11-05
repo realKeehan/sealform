@@ -1346,3 +1346,67 @@ test('with the dashboard mounted at /login, that address is the sign-in and fail
     await app.stop();
   }
 });
+
+// Review links ----------------------------------------------------------------------------------------
+
+test('a review link is view only, counts views, expires and can be cancelled', async () => {
+  const app = await start('review-links');
+  try {
+    const owner = await ownerSession(app);
+    const csrf = await owner.csrf('/contracts');
+    const make = async (fields: Record<string, string> = {}) => {
+      const response = await owner.post('/review-links', { csrf, document: 'partner-contract@PARTNER-1', label: 'Draft for Fio', recipient: 'Fiorella Arce', days: '7', views: '3', ...fields });
+      return { response, token: /\/sealform\/r\/([A-Za-z0-9_-]{43})</.exec(response.text)?.[1] };
+    };
+    const { response, token } = await make();
+    assert.equal(response.status, 200);
+    assert.ok(token, 'the link is shown on creation');
+    assert.equal(JSON.stringify(app.admin.reviewLinks()).includes(token), false, 'only a hash of the token is stored');
+
+    const open = await fetch(`${app.url}/sealform/r/${token}`);
+    assert.equal(open.status, 200);
+    const text = await open.text();
+    assert.match(text, /Review copy\. View only, not signed/);
+    assert.match(text, /Fiorella Arce/);
+    assert.doesNotMatch(text, /<script|<form|data-token/);
+    assert.match(open.headers.get('content-security-policy')!, /default-src 'none'; style-src 'self'/);
+    assert.equal(open.headers.get('cache-control'), 'no-store');
+    assert.equal((await fetch(`${app.url}/sealform/assets/review.css`)).status, 200);
+    assert.equal(app.admin.reviewLinks()[0]!.viewCount, 1);
+
+    // HEAD does not spend a view; GET spends one each; the limit is hard.
+    assert.equal((await fetch(`${app.url}/sealform/r/${token}`, { method: 'HEAD' })).status, 200);
+    assert.equal(app.admin.reviewLinks()[0]!.viewCount, 1);
+    assert.equal((await fetch(`${app.url}/sealform/r/${token}`)).status, 200);
+    assert.equal((await fetch(`${app.url}/sealform/r/${token}`)).status, 200);
+    assert.equal((await fetch(`${app.url}/sealform/r/${token}`)).status, 410, 'out of views');
+    assert.equal(app.admin.reviewLinks()[0]!.viewCount, 3);
+
+    // A review link is not a signing link.
+    assert.equal((await fetch(`${app.url}/sealform/api/envelopes/${token}`)).status, 404);
+    assert.equal((await fetch(`${app.url}/sealform/r/${'A'.repeat(43)}`)).status, 404);
+
+    // Cancel works at once, and the dashboard shows it.
+    const second = (await make()).token!;
+    assert.equal((await fetch(`${app.url}/sealform/r/${second}`)).status, 200);
+    const id = app.admin.reviewLinks().find((l) => l.viewCount === 1)!.id;
+    const revoked = await owner.post(`/review-links/${id}/revoke`, { csrf });
+    assert.equal(revoked.status, 303);
+    assert.equal((await fetch(`${app.url}/sealform/r/${second}`)).status, 410);
+    assert.equal((await owner.post(`/review-links/${id}/revoke`, { csrf })).status, 409, 'already cancelled');
+    assert.match((await owner.get('/contracts')).text, /cancelled/);
+
+    // Bad input is refused and the actions are audited.
+    assert.equal((await make({ views: '9999' })).response.status, 400);
+    assert.equal((await make({ document: 'nope@1' })).response.status, 400);
+    const actions = app.admin.auditEntries().map((e) => e.action);
+    assert.ok(actions.includes('review-link.create') && actions.includes('review-link.revoke'));
+
+    // Expiry.
+    const third = (await make({ days: '7' })).token!;
+    clock += 8 * 86_400_000;
+    assert.equal((await fetch(`${app.url}/sealform/r/${third}`)).status, 410);
+  } finally {
+    await app.stop();
+  }
+});

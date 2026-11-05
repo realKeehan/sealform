@@ -160,6 +160,17 @@ Netherlands and Belgium. They are plain JSON, so adding a country is a file:
 > dashboard flags unreviewed profiles and any older than a year. They are evidence settings, not
 > legal advice.
 
+### Review links (view only)
+
+To let someone read a document before they sign, make a **review link** from the same **Contracts** page. It
+shows one document (a draft is fine, even one with `[TO CONFIRM` markers) as read-only text under a banner
+saying it is a review copy and not signed. It has no signing form and no scripts. You choose the name shown
+on the page, the number of views (1 to 50), and an expiry (7 to 90 days). Each page load spends one view
+atomically, so the limit cannot be beaten by opening it twice at once; a HEAD request spends none. You can
+cancel it at any time and it stops at once. Only a hash of the link is stored, it is shown once, and
+creating or cancelling one is written to the audit log. Email scanners and chat link previews can use up
+views, so keep the limit generous. A review link does not replace the signing link: it cannot sign anything.
+
 ### Private contract links
 
 For agreements with partners and other people, a document with `"public": false` is never listed. An
@@ -249,7 +260,7 @@ npx sealform admin create --data /home/you/sealform-data   --key /home/you/keys/
 | Overview | everyone | Counts by status, what is open for signing, the chain head, checks not configured |
 | Submissions | everyone | Search and filter, per-record view with the signature, answers and all captured evidence, per-record verification, PDF and record downloads, application status |
 | Documents | owner, admin | Versions, languages, hashes, publish and close (publishing closes the previous version) |
-| Contracts | owner, admin | Private signing links: create, cancel, countersign, and the country check |
+| Contracts | owner, admin | Private signing links: create, cancel, countersign, and the country check. Also view-only review links with a view limit, expiry and cancel |
 | Site | owner | Parking switch, hidden and private page rules, site info (when `site` is set) |
 | Accounts | owner | Create accounts with a temporary password, change roles, disable, reset |
 | Sign-ins | everyone (owners see all) | Every attempt with IP and browser, successful or not |
@@ -288,6 +299,7 @@ link, hash and seal, so the chain still verifies while the personal data is gone
 | Admin dashboard: accounts, two-factor sign-in, sign-in history, sealed audit log, documents, submissions | done |
 | Jurisdiction profiles: nine countries plus a default, notices, required fields, excluded document types, hash in the record (not lawyer-reviewed) | done |
 | Private signing links for contracts, with countersignature | done |
+| View-only review links with view cap, expiry and revoke | done |
 | Site layer: serve the built site, hidden and private pages, parking mode, site info | done |
 | Optional checks: email one-time code, SMS, passkeys, ID verification, qualified signatures, RFC 3161 timestamps, signed PDFs | designed, off by default |
 

@@ -137,6 +137,21 @@ CREATE TABLE IF NOT EXISTS envelopes (
   revoked_at TEXT,
   override_reason TEXT
 );
+CREATE TABLE IF NOT EXISTS review_links (
+  id TEXT PRIMARY KEY,
+  token_hash TEXT NOT NULL UNIQUE,
+  document_id TEXT NOT NULL,
+  document_version TEXT NOT NULL,
+  label TEXT NOT NULL,
+  recipient TEXT NOT NULL,
+  max_views INTEGER NOT NULL,
+  view_count INTEGER NOT NULL DEFAULT 0,
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  last_viewed_at TEXT,
+  revoked_at TEXT
+);
 CREATE TABLE IF NOT EXISTS envelope_counter_signers (
   id TEXT PRIMARY KEY,
   parent_id TEXT NOT NULL REFERENCES envelopes(id),
@@ -408,6 +423,43 @@ export class AdminStore {
     return Number(this.db.prepare("UPDATE envelopes SET status = 'revoked', revoked_at = ? WHERE id = ? AND status IN ('open', 'signing')").run(at, id).changes) === 1;
   }
 
+  // Review links (view-only, no signing) ---------------------------------------------------------
+
+  createReviewLink(input: { tokenHash: string; documentId: string; documentVersion: string; label: string; recipient: string; maxViews: number; createdBy: string; createdAt: string; expiresAt: string }): ReviewLink {
+    const id = prefixedId('rev');
+    this.db
+      .prepare('INSERT INTO review_links (id, token_hash, document_id, document_version, label, recipient, max_views, created_by, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(id, input.tokenHash, input.documentId, input.documentVersion, input.label, input.recipient, input.maxViews, input.createdBy, input.createdAt, input.expiresAt);
+    return this.reviewLink(id)!;
+  }
+
+  reviewLink(id: string): ReviewLink | undefined {
+    return toReviewLink(this.db.prepare('SELECT * FROM review_links WHERE id = ?').get(id));
+  }
+
+  reviewLinkByTokenHash(tokenHash: string): ReviewLink | undefined {
+    return toReviewLink(this.db.prepare('SELECT * FROM review_links WHERE token_hash = ?').get(tokenHash));
+  }
+
+  reviewLinks(): ReviewLink[] {
+    return (this.db.prepare('SELECT * FROM review_links ORDER BY created_at DESC').all() as unknown[]).map((row) => toReviewLink(row)!);
+  }
+
+  /** Spends one view atomically. False when the link is revoked, expired or out of views. */
+  recordReviewView(id: string, now: string): boolean {
+    return (
+      Number(
+        this.db
+          .prepare('UPDATE review_links SET view_count = view_count + 1, last_viewed_at = ? WHERE id = ? AND revoked_at IS NULL AND expires_at > ? AND view_count < max_views')
+          .run(now, id, now).changes,
+      ) === 1
+    );
+  }
+
+  revokeReviewLink(id: string, at: string): boolean {
+    return Number(this.db.prepare('UPDATE review_links SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL').run(at, id).changes) === 1;
+  }
+
   countersignEnvelope(id: string, by: string, at: string, finalHash: string): boolean {
     return (
       Number(this.db.prepare("UPDATE envelopes SET status = 'complete', countersigned_by = ?, countersigned_at = ?, final_hash = ? WHERE id = ? AND status = 'awaiting-countersignature'").run(by, at, finalHash, id).changes) === 1
@@ -546,6 +598,40 @@ export interface Envelope {
   finalHash: string | null;
   revokedAt: string | null;
   overrideReason: string | null;
+}
+
+export interface ReviewLink {
+  id: string;
+  documentId: string;
+  documentVersion: string;
+  label: string;
+  recipient: string;
+  maxViews: number;
+  viewCount: number;
+  createdBy: string;
+  createdAt: string;
+  expiresAt: string;
+  lastViewedAt: string | null;
+  revokedAt: string | null;
+}
+
+function toReviewLink(row: unknown): ReviewLink | undefined {
+  if (!row) return undefined;
+  const r = row as Record<string, unknown>;
+  return {
+    id: r.id as string,
+    documentId: r.document_id as string,
+    documentVersion: r.document_version as string,
+    label: r.label as string,
+    recipient: r.recipient as string,
+    maxViews: r.max_views as number,
+    viewCount: r.view_count as number,
+    createdBy: r.created_by as string,
+    createdAt: r.created_at as string,
+    expiresAt: r.expires_at as string,
+    lastViewedAt: (r.last_viewed_at as string | null) ?? null,
+    revokedAt: (r.revoked_at as string | null) ?? null,
+  };
 }
 
 function toEnvelope(row: unknown): Envelope | undefined {

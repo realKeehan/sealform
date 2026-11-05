@@ -27,7 +27,7 @@ import {
   verifyTotp,
 } from './auth.ts';
 import { accessToken, type AccessIdentity, type CloudflareAccess } from './access.ts';
-import { AdminStore, ROLES, type Account, type AdminSession, type Envelope, type Role } from './db.ts';
+import { AdminStore, ROLES, type Account, type AdminSession, type Envelope, type ReviewLink, type Role } from './db.ts';
 import type { Mailer } from '../mailer.ts';
 import { csrfField, html, layout, raw, shortDate, type Raw } from './html.ts';
 import { renderDocumentMarkdown } from './markdown.ts';
@@ -770,6 +770,56 @@ export async function createAdmin(options: AdminOptions) {
   const EXPIRY_DAYS = [7, 14, 30, 60, 90];
   const countryNames = new Intl.DisplayNames(['en'], { type: 'region', fallback: 'code' });
 
+  const REVIEW_VIEWS = [1, 3, 5, 10, 25, 50];
+
+  function reviewState(link: ReviewLink): string {
+    if (link.revokedAt) return 'cancelled';
+    if (link.expiresAt <= nowIso()) return 'expired';
+    return link.viewCount >= link.maxViews ? 'used up' : 'active';
+  }
+
+  async function createReviewLink(ctx: Ctx): Promise<void> {
+    need(ctx, 'owner', 'admin');
+    const form = await readForm(ctx);
+    checkPost(ctx, form);
+    const [docId, version] = (form.get('document') ?? '').split('@');
+    const doc = docId && version ? documents.get(docId, version) : undefined;
+    if (!doc || documents.status(doc) === 'closed') throw new HttpError(400, 'Pick a document that is not closed');
+    const label = (form.get('label') ?? '').trim();
+    const recipient = (form.get('recipient') ?? '').trim();
+    const days = Number(form.get('days'));
+    const maxViews = Number(form.get('views'));
+    if (!label || label.length > 120 || !recipient || recipient.length > 200 || !EXPIRY_DAYS.includes(days) || !REVIEW_VIEWS.includes(maxViews)) {
+      throw new HttpError(400, 'A label, a recipient name, an expiry and a view limit from the lists are needed');
+    }
+    const token = newToken();
+    const created = options.now();
+    const link = db.createReviewLink({
+      tokenHash: hashToken(token),
+      documentId: doc.manifest.id,
+      documentVersion: doc.manifest.version,
+      label,
+      recipient,
+      maxViews,
+      createdBy: ctx.account!.email,
+      createdAt: created.toISOString(),
+      expiresAt: new Date(created.getTime() + days * 86_400_000).toISOString(),
+    });
+    await audit(ctx, 'review-link.create', link.id, { document: `${link.documentId}@${link.documentVersion}`, recipient, maxViews, expiresAt: link.expiresAt });
+    contractsPage(ctx, { review: { link: `${options.origin}${options.signBase}/r/${token}`, label, recipient, maxViews, expiresAt: link.expiresAt } });
+  }
+
+  async function reviewLinkAction(ctx: Ctx, id: string, action: string): Promise<void> {
+    need(ctx, 'owner', 'admin');
+    const form = await readForm(ctx);
+    checkPost(ctx, form);
+    const link = db.reviewLink(id);
+    if (!link || action !== 'revoke') throw new HttpError(404, 'No such review link');
+    if (!db.revokeReviewLink(id, nowIso())) throw new HttpError(409, 'This review link is already cancelled');
+    await audit(ctx, 'review-link.revoke', id, { recipient: link.recipient, views: link.viewCount });
+    redirect(ctx, '/contracts?m=saved');
+  }
+
   function envelopeState(env: Envelope): string {
     return (env.status === 'open' || env.status === 'signing') && env.expiresAt < nowIso() ? 'expired' : env.status;
   }
@@ -801,7 +851,7 @@ export async function createAdmin(options: AdminOptions) {
     return signers;
   }
 
-  function contractsPage(ctx: Ctx, extra?: { created?: { link: string; label: string; email: string }; error?: string }, status = 200): void {
+  function contractsPage(ctx: Ctx, extra?: { created?: { link: string; label: string; email: string }; review?: { link: string; label: string; recipient: string; maxViews: number; expiresAt: string }; error?: string }, status = 200): void {
     need(ctx, 'owner', 'admin');
     const csrf = csrfField(ctx.session!.csrf);
     const docs = documents.all().filter((d) => documents.status(d) === 'published' && !d.manifest.public && d.manifest.category !== 'disclosure');
@@ -817,6 +867,11 @@ export async function createAdmin(options: AdminOptions) {
         ? html`<section class="card notice" role="status"><h2>Link for ${extra.created.email}</h2>
           <p>Send it to them privately. It is shown only once; sealform keeps only a hash of it, so it cannot be shown again. If it is lost, cancel this contract and make a new one.</p>
           <p><code class="secret">${extra.created.link}</code></p></section>`
+        : ''}
+      ${extra?.review
+        ? html`<section class="card notice" role="status"><h2>Review link for ${extra.review.recipient}</h2>
+          <p>View only: it cannot sign anything. It works for ${extra.review.maxViews} views until ${shortDate(extra.review.expiresAt)}, and you can cancel it below. It is shown only once; sealform keeps only a hash of it.</p>
+          <p><code class="secret">${extra.review.link}</code></p></section>`
         : ''}
       <div class="table-wrap"><table>
         <thead><tr><th>Contract</th><th>Signer</th><th>Document</th><th>Status</th><th>Expires</th></tr></thead>
@@ -844,6 +899,31 @@ export async function createAdmin(options: AdminOptions) {
           <button type="submit">Create the link</button>
         </form>`
           : html`<p class="muted">No private document is published. A document is private when its <code>public</code> setting is false; publish one from Documents first.</p>`}
+      </section>
+      <h2>Review links</h2>
+      <p class="muted">A view-only copy of any document, including a draft, for someone who should read it before signing. It has no signing form, a limit on views, an expiry, and can be cancelled at any time. Email scanners and chat previews can use up views, so keep the limit generous.</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Label</th><th>Prepared for</th><th>Document</th><th>Views</th><th>Expires</th><th>Status</th><th></th></tr></thead>
+        <tbody>${db.reviewLinks().map((link) => html`<tr>
+          <td>${link.label}</td>
+          <td>${link.recipient}</td>
+          <td>${link.documentId}@${link.documentVersion}</td>
+          <td>${link.viewCount} of ${link.maxViews}${link.lastViewedAt ? html` <span class="muted">(last ${shortDate(link.lastViewedAt)})</span>` : ''}</td>
+          <td>${shortDate(link.expiresAt)}</td>
+          <td><span class="pill pill--${reviewState(link) === 'active' ? 'published' : reviewState(link)}">${reviewState(link)}</span></td>
+          <td>${reviewState(link) === 'active' ? html`<form method="post" action="${base}/review-links/${link.id}/revoke" class="inline">${csrf}<button type="submit">Cancel</button></form>` : ''}</td>
+        </tr>`)}</tbody>
+      </table></div>
+      <section class="card">
+        <h2>New review link</h2>
+        <form method="post" action="${base}/review-links" class="stack narrow">${csrf}
+          <label>Document <select name="document" required>${documents.all().filter((d) => documents.status(d) !== 'closed').sort((a, b) => a.manifest.id.localeCompare(b.manifest.id) || b.manifest.version.localeCompare(a.manifest.version)).map((d) => html`<option value="${d.manifest.id}@${d.manifest.version}">${d.manifest.title} (${d.manifest.version}, ${documents.status(d)})</option>`)}</select></label>
+          <label>Label for your records <input name="label" required maxlength="120"></label>
+          <label>Prepared for (name shown on the page) <input name="recipient" required maxlength="200"></label>
+          <label>Link expires in <select name="days">${EXPIRY_DAYS.map((d) => html`<option value="${d}" ${d === 7 ? raw('selected') : ''}>${d} days</option>`)}</select></label>
+          <label>Views allowed <select name="views">${REVIEW_VIEWS.map((v) => html`<option value="${v}" ${v === 10 ? raw('selected') : ''}>${v}</option>`)}</select></label>
+          <button type="submit">Create the review link</button>
+        </form>
       </section>`,
       status,
     );
@@ -1307,6 +1387,8 @@ export async function createAdmin(options: AdminOptions) {
         else if (parts[0] === 'submissions' && parts.length === 3 && parts[2] === 'hold') await setHold(ctx, parts[1]!);
         else if (parts[0] === 'documents' && parts.length === 4 && parts[3] === 'status') await setDocumentStatus(ctx, findDoc(parts[1]!, parts[2]!));
         else if (path === '/contracts') await createContract(ctx);
+        else if (path === '/review-links') await createReviewLink(ctx);
+        else if (parts[0] === 'review-links' && parts.length === 3) await reviewLinkAction(ctx, parts[1]!, parts[2]!);
         else if (parts[0] === 'site' && parts.length >= 2) await siteAction(ctx, parts.slice(1).join('/'));
         else if (parts[0] === 'contracts' && parts.length === 3) await contractAction(ctx, parts[1]!, parts[2]!);
         else if (path === '/accounts') await accountAction(ctx, undefined, 'create');
