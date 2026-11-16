@@ -2,7 +2,7 @@
 // <lang>.md text per language. A published version is immutable: its text and manifest hashes are
 // computed at load and every signature is checked against them.
 
-import { readdir, readFile } from 'node:fs/promises';
+import { readdir, readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { sha256Canonical, sha256Hex } from '../core/index.ts';
 import type { Check } from './checks.ts';
@@ -61,6 +61,8 @@ export interface LoadedDocument {
   manifest: DocumentManifest;
   manifestSha256: string;
   texts: Map<string, LoadedText>;
+  /** When the version's files were last changed on disk (newest of the manifest and texts). Shown on the dashboard only; never hashed. */
+  editedAt?: Date;
 }
 
 const ID = /^[a-z0-9][a-z0-9._-]{0,63}$/i;
@@ -175,7 +177,9 @@ async function loadVersion(dir: string, checks: Map<string, Check>): Promise<Loa
     const text = (await readFile(join(dir, `${lang}.md`), 'utf8')).replace(/\r\n?/g, '\n');
     texts.set(lang, { lang, text, sha256: await sha256Hex(text) });
   }
-  const loaded = { manifest, manifestSha256: await sha256Canonical(signerVisible(manifest)), texts };
+  const files = ['document.json', ...manifest.languages.map((lang) => `${lang}.md`)];
+  const editedAt = new Date(Math.max(...(await Promise.all(files.map(async (file) => (await stat(join(dir, file))).mtimeMs)))));
+  const loaded = { manifest, manifestSha256: await sha256Canonical(signerVisible(manifest)), texts, editedAt };
   if (manifest.status === 'published' && hasPlaceholder(loaded)) throw new Error(`${dir}: published text still contains ${PLACEHOLDER}: ...] for something to fill in`);
   return loaded;
 }
