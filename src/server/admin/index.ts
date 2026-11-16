@@ -606,13 +606,14 @@ export async function createAdmin(options: AdminOptions) {
       html`<h1>Documents</h1>
       <p class="muted">Document text lives in the documents folder on the server. A published version never changes; new terms go in a new version folder.</p>
       <div class="table-wrap"><table>
-        <thead><tr><th>Document</th><th>Version</th><th>Status</th><th>Languages</th><th>Listed</th><th>Signed</th></tr></thead>
+        <thead><tr><th>Document</th><th>Version</th><th>Status</th><th>Languages</th><th>Listed</th><th>Edited</th><th>Signed</th></tr></thead>
         <tbody>${docs.map((doc) => html`<tr>
           <td><a href="${base}/documents/${doc.manifest.id}/${doc.manifest.version}">${doc.manifest.title}</a></td>
           <td>${doc.manifest.version}</td>
           <td><span class="pill pill--${documents.status(doc)}">${documents.status(doc)}</span></td>
           <td>${doc.manifest.languages.join(', ')}</td>
           <td>${doc.manifest.category === 'disclosure' ? 'disclosure' : doc.manifest.public ? 'public' : 'private links'}</td>
+          <td>${doc.editedAt ? doc.editedAt.toISOString().slice(0, 10) : ''}</td>
           <td>${counts.get(`${doc.manifest.id}@${doc.manifest.version}`) ?? 0}</td>
         </tr>`)}</tbody>
       </table></div>`,
@@ -642,6 +643,7 @@ export async function createAdmin(options: AdminOptions) {
         <dl class="facts">
           <dt>Id and version</dt><dd>${doc.manifest.id}@${doc.manifest.version}</dd>
           <dt>Status</dt><dd><span class="pill pill--${status}">${status}</span></dd>
+          <dt>Last edited</dt><dd>${doc.editedAt ? doc.editedAt.toISOString().slice(0, 10) : 'unknown'}</dd>
           <dt>Category</dt><dd>${doc.manifest.category}</dd>
           <dt>Languages</dt><dd>${doc.manifest.languages.join(', ')} (governing: ${doc.manifest.governingLang})</dd>
           <dt>Retention</dt><dd>signed ${doc.manifest.retention.signed}, unsigned ${doc.manifest.retention.unsigned}</dd>
