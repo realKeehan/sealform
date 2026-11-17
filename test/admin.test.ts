@@ -460,7 +460,16 @@ test('publishing a document version closes the previous one, and the status surv
     assert.match(preview.text, /<h4>Confidentiality<\/h4>/);
     assert.match(preview.text, /<strong>unreleased material<\/strong>/);
     assert.match(preview.text, /<ul><li>First point<\/li><li>Second point<\/li><\/ul>/);
-    assert.match(preview.text, /<details><summary>View exact Markdown source<\/summary><pre class="doc-text"># Example Participation Agreement/);
+    assert.match(preview.text, /<details><summary>View exact Markdown source<\/summary>.*<pre class="doc-text" id="doc-source-en"># Example Participation Agreement/);
+    assert.match(preview.text, /<button type="button" class="copy-source" data-copy-target="doc-source-en" aria-label="Copy Markdown source"/);
+    assert.match(preview.text, /<script src="[^"]*\/admin-copy\.js" defer><\/script>/);
+    // Only this page may load a script, and only from the dashboard's own origin.
+    assert.match(preview.headers.get('content-security-policy')!, /script-src 'self'/);
+    assert.equal(((await owner.get('/documents')).headers.get('content-security-policy') ?? '').includes('script-src'), false);
+    const copyScript = await owner.get('/admin-copy.js');
+    assert.equal(copyScript.status, 200);
+    assert.match(copyScript.headers.get('content-type')!, /text\/javascript/);
+    assert.match(copyScript.text, /navigator\.clipboard\.writeText/);
 
     const close = await owner.post('/documents/example-agreement/EXAMPLE-1/status', { csrf, status: 'closed' });
     assert.equal(close.location, `${BASE}/documents/example-agreement/EXAMPLE-1?m=saved`);
