@@ -240,7 +240,7 @@ const sealform = await createSealform({
 
 The check runs before any account lookup or password work, so a bot learns nothing and cannot lock
 the real account by hammering it. Only the sign-in page loads Cloudflare's script; every other
-dashboard page keeps a policy that forbids scripts. To try it locally without an account, run the demo
+dashboard page keeps a policy that forbids scripts, except the document page, which may load one small same-origin script (`/admin-copy.js`) for its copy button. To try it locally without an account, run the demo
 with Cloudflare's test keys: `TURNSTILE_SITE_KEY=1x00000000000000000000AA
 TURNSTILE_SECRET=1x0000000000000000000000000000000AA npm run demo`.
 
@@ -259,7 +259,7 @@ npx sealform admin create --data /home/you/sealform-data   --key /home/you/keys/
 | --- | --- | --- |
 | Overview | everyone | Counts by status, what is open for signing, the chain head, checks not configured |
 | Submissions | everyone | Search and filter, per-record view with the signature, answers and all captured evidence, per-record verification, PDF and record downloads, application status |
-| Documents | owner, admin | Versions, languages, hashes, publish and close (publishing closes the previous version) |
+| Documents | owner, admin | Versions, languages, hashes, when each version's files were last edited (UTC, to the minute), publish and close (publishing closes the previous version). Each text has its exact Markdown source with a copy button |
 | Contracts | owner, admin | Private signing links: create, cancel, countersign, and the country check. Also view-only review links with a view limit, expiry and cancel |
 | Site | owner | Parking switch, hidden and private page rules, site info (when `site` is set) |
 | Accounts | owner | Create accounts with a temporary password, change roles, disable, reset |
@@ -274,7 +274,7 @@ How it is protected: scrypt password hashes; TOTP two-factor that owners cannot 
 that cannot be replayed; an account locks for 15 minutes after five failures; sessions live in
 HttpOnly, SameSite=Strict cookies, idle out after 2 hours and end after 12; every change needs a CSRF
 token and a same-origin request; pages are server-rendered with escaping everywhere and a CSP that
-forbids scripts. The last active owner cannot be demoted or disabled.
+forbids scripts (the document page alone allows its own copy-button script from the dashboard's origin, never inline). The last active owner cannot be demoted or disabled.
 
 Signing stores the record in SQLite and as files, renders a PDF copy, and writes the receipt email
 to an outbox folder until a mail transport is configured.
