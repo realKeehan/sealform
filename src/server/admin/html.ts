@@ -49,6 +49,8 @@ export interface LayoutInput {
   user?: { email: string; role: string };
   csrf?: string;
   nav?: string;
+  /** URL of a same-origin script to load, for the one page that needs it. */
+  script?: string;
   flash?: { kind: 'ok' | 'error'; text: string } | undefined;
   operatorName: string;
 }
@@ -65,6 +67,7 @@ export function layout(input: LayoutInput): string {
 <link rel="icon" href="data:,">
 <title>${input.title} · ${input.operatorName} signing admin</title>
 <link rel="stylesheet" href="${input.base}/admin.css">
+${input.script ? html`<script src="${input.script}" defer></script>` : ''}
 </head>
 <body>
 <a class="skip" href="#main">Skip to content</a>

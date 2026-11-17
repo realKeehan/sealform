@@ -87,6 +87,8 @@ type Ctx = {
   ip: string;
   /** Set by the sign-in page, which alone is allowed to load the Turnstile script. */
   turnstile?: boolean;
+  /** Set by the document page, which loads the small same-origin script behind its copy button. */
+  copyScript?: boolean;
   account?: Account;
   session?: AdminSession;
 };
@@ -126,6 +128,33 @@ export async function createAdmin(options: AdminOptions) {
     'content-security-policy': `${securityHeaders['content-security-policy']}; script-src ${TURNSTILE_ORIGIN}; frame-src ${TURNSTILE_ORIGIN}; connect-src ${TURNSTILE_ORIGIN}`,
   };
 
+  // The copy button's script is the only script the dashboard serves itself. It is allowed on the document page alone.
+  const copyHeaders = { ...securityHeaders, 'content-security-policy': `${securityHeaders['content-security-policy']}; script-src 'self'` };
+  const COPY_SCRIPT = `document.addEventListener('click', async (event) => {
+  const button = event.target instanceof Element ? event.target.closest('[data-copy-target]') : null;
+  if (!button) return;
+  const source = document.getElementById(button.getAttribute('data-copy-target'));
+  const status = button.parentElement && button.parentElement.querySelector('[data-copy-status]');
+  if (!source) return;
+  let message = 'Copied';
+  try {
+    await navigator.clipboard.writeText(source.textContent);
+  } catch {
+    const range = document.createRange();
+    range.selectNodeContents(source);
+    const selection = window.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+    message = 'Selected. Press Ctrl+C to copy';
+  }
+  if (status) {
+    status.textContent = message;
+    clearTimeout(status.copyTimer);
+    status.copyTimer = setTimeout(() => { status.textContent = ''; }, 2000);
+  }
+});
+`;
+
   function page(ctx: Ctx, title: string, nav: string, body: Raw, status = 200): void {
     const flash = MESSAGES[ctx.url.searchParams.get('m') ?? ''];
     const text = layout({
@@ -138,8 +167,9 @@ export async function createAdmin(options: AdminOptions) {
       // A session that has only passed the password step gets the bare page, not the admin nav.
       ...(ctx.account && ctx.session?.stage === 'active' ? { user: { email: ctx.account.email, role: ctx.account.role } } : {}),
       ...(ctx.session?.stage === 'active' ? { csrf: ctx.session.csrf } : {}),
+      ...(ctx.copyScript ? { script: `${base}/admin-copy.js` } : {}),
     });
-    ctx.res.writeHead(status, { ...(ctx.turnstile ? turnstileHeaders : securityHeaders), 'content-type': 'text/html; charset=utf-8' });
+    ctx.res.writeHead(status, { ...(ctx.turnstile ? turnstileHeaders : ctx.copyScript ? copyHeaders : securityHeaders), 'content-type': 'text/html; charset=utf-8' });
     ctx.res.end(text);
   }
 
@@ -613,7 +643,7 @@ export async function createAdmin(options: AdminOptions) {
           <td><span class="pill pill--${documents.status(doc)}">${documents.status(doc)}</span></td>
           <td>${doc.manifest.languages.join(', ')}</td>
           <td>${doc.manifest.category === 'disclosure' ? 'disclosure' : doc.manifest.public ? 'public' : 'private links'}</td>
-          <td>${doc.editedAt ? doc.editedAt.toISOString().slice(0, 10) : ''}</td>
+          <td>${editedStamp(doc.editedAt)}</td>
           <td>${counts.get(`${doc.manifest.id}@${doc.manifest.version}`) ?? 0}</td>
         </tr>`)}</tbody>
       </table></div>`,
@@ -622,6 +652,7 @@ export async function createAdmin(options: AdminOptions) {
 
   function documentPage(ctx: Ctx, doc: LoadedDocument): void {
     need(ctx, 'owner', 'admin');
+    ctx.copyScript = true;
     const status = documents.status(doc);
     const csrf = csrfField(ctx.session!.csrf);
     const missing = doc.manifest.requiredChecks.filter((kind) => !options.checks.get(kind)?.enabled);
@@ -643,7 +674,7 @@ export async function createAdmin(options: AdminOptions) {
         <dl class="facts">
           <dt>Id and version</dt><dd>${doc.manifest.id}@${doc.manifest.version}</dd>
           <dt>Status</dt><dd><span class="pill pill--${status}">${status}</span></dd>
-          <dt>Last edited</dt><dd>${doc.editedAt ? doc.editedAt.toISOString().slice(0, 10) : 'unknown'}</dd>
+          <dt>Last edited</dt><dd>${editedStamp(doc.editedAt) || 'unknown'}</dd>
           <dt>Category</dt><dd>${doc.manifest.category}</dd>
           <dt>Languages</dt><dd>${doc.manifest.languages.join(', ')} (governing: ${doc.manifest.governingLang})</dd>
           <dt>Retention</dt><dd>signed ${doc.manifest.retention.signed}, unsigned ${doc.manifest.retention.unsigned}</dd>
@@ -664,7 +695,7 @@ export async function createAdmin(options: AdminOptions) {
         ${status !== 'published' ? html`<p class="muted">Publishing closes any other published version of ${doc.manifest.id}.</p>` : ''}
       </section>
       ${[...doc.texts.values()].map(
-        (text) => html`<section class="card"><h2>Text (${text.lang})</h2><p class="muted">SHA-256 <code>${text.sha256}</code></p><article class="doc-preview" lang="${text.lang}">${renderDocumentMarkdown(text.text)}</article><details><summary>View exact Markdown source</summary><pre class="doc-text">${text.text}</pre></details></section>`,
+        (text) => html`<section class="card"><h2>Text (${text.lang})</h2><p class="muted">SHA-256 <code>${text.sha256}</code></p><article class="doc-preview" lang="${text.lang}">${renderDocumentMarkdown(text.text)}</article><details><summary>View exact Markdown source</summary><div class="doc-source-toolbar"><span class="muted" data-copy-status role="status"></span><button type="button" class="copy-source" data-copy-target="doc-source-${text.lang}" aria-label="Copy Markdown source" title="Copy Markdown source"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="18" height="18" fill="currentColor" aria-hidden="true" focusable="false"><path fill-rule="evenodd" d="M4 2a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2zm2-1a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V2a1 1 0 0 0-1-1zM2 5a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1v-1h1v1a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h1v1z"/></svg></button></div><pre class="doc-text" id="doc-source-${text.lang}">${text.text}</pre></details></section>`,
       )}`,
     );
   }
@@ -1300,6 +1331,11 @@ export async function createAdmin(options: AdminOptions) {
     const method = req.method ?? 'GET';
 
     try {
+      if (path === '/admin-copy.js') {
+        res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8', 'cache-control': 'public, max-age=300', 'x-content-type-options': 'nosniff' });
+        res.end(COPY_SCRIPT);
+        return true;
+      }
       if (path === '/admin.css') {
         css ??= await readFile(cssPath, 'utf8').catch(() => '');
         res.writeHead(200, { 'content-type': 'text/css; charset=utf-8', 'cache-control': 'public, max-age=300', 'x-content-type-options': 'nosniff' });
@@ -1429,6 +1465,13 @@ export async function createAdmin(options: AdminOptions) {
   }
 
   return { route, db, isSignedIn };
+}
+
+/** "2026-11-16 13:05 UTC": a document version's last-edited time for the dashboard. Empty when unknown. */
+function editedStamp(date: Date | undefined): string {
+  if (!date) return '';
+  const iso = date.toISOString();
+  return `${iso.slice(0, 10)} ${iso.slice(11, 16)} UTC`;
 }
 
 function stripUndefined<T extends Record<string, unknown>>(value: T): { [K in keyof T]: Exclude<T[K], undefined> } {
