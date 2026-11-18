@@ -160,12 +160,63 @@ Netherlands and Belgium. They are plain JSON, so adding a country is a file:
 > dashboard flags unreviewed profiles and any older than a year. They are evidence settings, not
 > legal advice.
 
+### Policy change notices
+
+When the policies your agreements refer to change, the **Notices** page (owners only) emails everyone who
+signed. Configure it with `notices`:
+
+```js
+notices: {
+  mailer,                      // optional; defaults to the main mailer. Use one that sends as `from`.
+  from: 'Example Studio <noreply@example.com>',
+  replyTo: 'legal@example.com',
+  copyTo: ['legal@example.com'], // one copy of each notice, for your records
+  perHour: 60,                 // stay under your mail server's hourly limit
+  minNoticeDays: 30,
+  draftsDir: '/srv/sealform-notices',
+}
+```
+
+Notices are not written on the dashboard. Each one is a draft file in `draftsDir`, written and reviewed
+next to the policies themselves and copied to the server:
+
+```json
+{
+  "id": "2026-12-terms-refunds",
+  "subject": "Changes to our Studio Terms",
+  "policies": [{ "name": "Studio Terms", "url": "https://example.com/terms/" }],
+  "summary": "Plain-language summary of what changed.",
+  "effectiveOn": "2027-01-15"
+}
+```
+
+Leave out `effectiveOn` and the change takes effect the day the notice is approved. The file name must be `<id>.json`. The Notices page lists drafts not yet sent with the exact email text and
+the number of recipients, and reports any file it cannot use. Approving one needs a confirmation, and a
+written reason when the effective date is less than `minNoticeDays` away. It is audit-logged and can happen
+only once per draft id.
+
+Recipients are every distinct email on a signed record that is not withdrawn or tombstoned, plus `copyTo`.
+Each person gets their own plain-text email: no shared To or BCC list, no tracking, no images. The queue is
+kept in the database and sent at most `perHour` per rolling hour, once a minute and right after approval, so
+a restart resumes where it stopped. A delivery that fails three times is marked failed and can be retried
+from the page.
+
+### Auto-accepting a document's submissions
+
+Every submission starts as `pending` on the dashboard's Submissions page until someone sets it to accepted
+or rejected. For a public document nobody reviews one by one, such as an NDA anyone may sign, set
+`"autoAccept": true` in its `document.json`: new submissions are then stored as `accepted`. It only sets
+the starting status, which can still be changed and is audit-logged as usual. Signatures through private
+contract links always start as `pending`. Like `status`, it is operational: not shown to the signer and not
+hashed, so turning it on does not need a new version.
+
 ### Review links (view only)
 
 To let someone read a document before they sign, make a **review link** from the same **Contracts** page. It
 shows one document (a draft is fine, even one with `[TO CONFIRM` markers) as read-only text under a banner
 saying it is a review copy and not signed. It has no signing form and no scripts. You choose the name shown
-on the page, the number of views (1 to 50, including 15), and an expiry (7 to 90 days). Each page load spends one view
+on the page, the number of views and an expiry. The form suggests views (1, 3, 5, 10, 15, 25, 50) and expiries
+(7, 14, 30, 60, 90 days), but any whole number from 1 to 500 views and 1 to 365 days can be typed. Each page load spends one view
 atomically, so the limit cannot be beaten by opening it twice at once; a HEAD request spends none. You can
 cancel it at any time and it stops at once. Only a hash of the link is stored, it is shown once, and
 creating or cancelling one is written to the audit log. Email scanners and chat link previews can use up
@@ -175,13 +226,31 @@ views, so keep the limit generous. A review link does not replace the signing li
 
 For agreements with partners and other people, a document with `"public": false` is never listed. An
 owner or admin makes a link for one named signer from the dashboard's **Contracts** page: choose the
-document, the signer's name and email (fixed on their form), an expiry and whether you will
-countersign. The link is shown once; only a hash of it is stored. It works once, can be cancelled, and
+document, the signer's name and email (fixed on their form), an expiry (suggested 7 to 90 days, or any whole
+number of days up to 365) and whether you will countersign. The link is shown once; only a hash of it is stored. It works once, can be cancelled, and
 its hosted signing page needs no site of yours. Entering the signer's country checks the document
 against that country's profile first; if the law there excludes this kind of document, creating the link
 needs a stated reason, which is kept in the audit log.
 
 Countersigning requires each Studio party to draw their own signature through a separate private link. Configure one or two Studio signers when making the contract. Set `requiredCounterSigners` to their exact signing names in a private document manifest to enforce both named parties. After the recipient signs, open the contract and create each person's signing link. Creating a link does not sign for them. Replacing an unused link revokes its previous token. Completion requires every configured Studio signature; each sealed record references the original record hash, and the final hash and audit entry reference all signatures. Existing completed dashboard approvals retain their historical status and are labelled as legacy approvals.
+
+To skip retyping who a contract is between, give the private manifest a `parties` block. The **Contracts**
+page then offers a "Fill in the people from a contract" link for it, which fills in the signer's name, email
+and country, the Studio signers, and the review link's "Prepared for" name. Every part is optional and
+everything stays editable. `parties` is never shown to the signer and is not hashed, so it can be corrected
+without a new version:
+
+```json
+"parties": {
+  "recipient": { "name": "Pat Partner", "email": "pat@example.org", "country": "DE" },
+  "studio": [
+    { "name": "Sam Studio", "email": "sam@example.org", "country": "US" }
+  ]
+}
+```
+
+Without `parties.studio`, the Studio signer names come from `requiredCounterSigners`, and a name that matches
+the signed-in account gets that account's email.
 
 Public and private forms offer a focused reader and an unsigned text download containing the exact versioned agreement and electronic-signature disclosure. Downloading does not sign anything. Required checkbox labels include a red asterisk in the shared client.
 

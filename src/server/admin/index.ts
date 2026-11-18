@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { COUNTRY_CODES, isCountryCode, verifyChain, verifyEntry, type ChainEntry, type JsonValue, type KeySet, type SealformRecord, type SealingKey } from '../../core/index.ts';
 import type { Check } from '../checks.ts';
-import { hasPlaceholder, type DocumentRegistry, type DocumentStatus, type LoadedDocument } from '../documents.ts';
+import { hasPlaceholder, type DocumentRegistry, type DocumentStatus, type LoadedDocument, type PartyDetails } from '../documents.ts';
 import { RateLimiter, type BotCheck } from '../guards.ts';
 import { header, HttpError } from '../http.ts';
 import { profileHealth, retentionReview, type LoadedProfile, type ProfileRegistry } from '../profiles.ts';
@@ -29,6 +29,7 @@ import {
 import { accessToken, type AccessIdentity, type CloudflareAccess } from './access.ts';
 import { AdminStore, ROLES, type Account, type AdminSession, type Envelope, type ReviewLink, type Role } from './db.ts';
 import type { Mailer } from '../mailer.ts';
+import { loadDrafts, noticeText, NoticeStore, sendQueued, type NoticeConfig } from './notices.ts';
 import { csrfField, html, layout, raw, shortDate, type Raw } from './html.ts';
 import { renderDocumentMarkdown } from './markdown.ts';
 
@@ -51,6 +52,8 @@ export interface AdminOptions {
   signBase: string;
   mailer: Mailer;
   operator: { name: string; email: string };
+  /** Policy change notices to signers; the Notices page appears only when set. */
+  notices: NoticeConfig | undefined;
   /** Checked on the sign-in form before any password work, so bots cannot probe or lock accounts. */
   botCheck: BotCheck;
   /** Public Turnstile site key; the widget is shown on the sign-in page when set. */
@@ -71,6 +74,7 @@ export const APPLICATION_STATUSES = ['pending', 'accepted', 'rejected', 'withdra
 
 const MESSAGES: Record<string, { kind: 'ok' | 'error'; text: string }> = {
   saved: { kind: 'ok', text: 'Saved.' },
+  noticequeued: { kind: 'ok', text: 'Approved. The notice is being sent at the hourly limit; progress is below.' },
   password: { kind: 'ok', text: 'Password changed. Other sessions were signed out.' },
   totp: { kind: 'ok', text: 'Two-factor sign-in is on.' },
   totpoff: { kind: 'ok', text: 'Two-factor sign-in is off.' },
@@ -104,6 +108,21 @@ export async function createAdmin(options: AdminOptions) {
   let css: string | undefined;
 
   const nowIso = () => options.now().toISOString();
+
+  // Policy change notices. The timer sends what the hourly cap allows; the queue lives in the database.
+  const notices = options.notices ? new NoticeStore(store.database) : undefined;
+  let sending: Promise<number> | undefined;
+  const sendNotices = (max?: number): Promise<number> => {
+    if (!notices || !options.notices) return Promise.resolve(0);
+    // One run at a time, so a slow mail server never gets the same email twice.
+    sending ??= sendQueued({ notices, config: options.notices, mailer: options.notices.mailer ?? options.mailer, operatorName: options.operatorName, now: options.now, log: options.log, ...(max === undefined ? {} : { max }) }).finally(() => {
+      sending = undefined;
+    });
+    return sending;
+  };
+  const logSendError = (e: unknown) => options.log(`notice sender: ${e instanceof Error ? e.message : String(e)}`);
+  const noticeTimer = notices ? setInterval(() => void sendNotices().catch(logSendError), 60_000) : undefined;
+  noticeTimer?.unref();
   const actorOf = (ctx: Ctx) => (ctx.account ? { id: ctx.account.id, email: ctx.account.email } : ('system' as const));
   const audit = (ctx: Ctx, action: string, target: string, details: Record<string, JsonValue> = {}) =>
     db.audit(options.sealingKey, { at: nowIso(), actor: actorOf(ctx), action, target, details, ip: ctx.ip });
@@ -164,6 +183,7 @@ export async function createAdmin(options: AdminOptions) {
       nav,
       flash,
       operatorName: options.operatorName,
+      notices: !!options.notices,
       // A session that has only passed the password step gets the bare page, not the admin nav.
       ...(ctx.account && ctx.session?.stage === 'active' ? { user: { email: ctx.account.email, role: ctx.account.role } } : {}),
       ...(ctx.session?.stage === 'active' ? { csrf: ctx.session.csrf } : {}),
@@ -798,12 +818,152 @@ export async function createAdmin(options: AdminOptions) {
     redirect(ctx, '/site?m=saved');
   }
 
+  // Notices: policy change emails to signers -------------------------------------------------------
+
+  function noticeSetup(ctx: Ctx): { store: NoticeStore; config: NoticeConfig } {
+    need(ctx, 'owner');
+    if (!notices || !options.notices) throw new HttpError(404, 'Notices are not configured');
+    return { store: notices, config: options.notices };
+  }
+
+  /** Whole days from today (UTC) to a YYYY-MM-DD date. */
+  function daysUntil(day: string): number {
+    const today = Date.parse(`${nowIso().slice(0, 10)}T00:00:00Z`);
+    return Math.round((Date.parse(`${day}T00:00:00Z`) - today) / 86_400_000);
+  }
+
+  function noticeRecipients(store: NoticeStore, config: NoticeConfig): string[] {
+    return [...new Set([...store.signerEmails(), ...(config.copyTo ?? []).map((e) => e.toLowerCase())])];
+  }
+
+  async function noticesPage(ctx: Ctx): Promise<void> {
+    const { store, config } = noticeSetup(ctx);
+    const csrf = csrfField(ctx.session!.csrf);
+    const { drafts, problems } = await loadDrafts(config.draftsDir);
+    const done = new Set(store.list().map((n) => n.source));
+    const waiting = drafts.filter((d) => !done.has(d.id));
+    const recipients = noticeRecipients(store, config).length;
+    const min = config.minNoticeDays ?? 30;
+    const plural = (n: number) => (n === 1 ? 'address' : 'addresses');
+    page(
+      ctx,
+      'Notices',
+      'notices',
+      html`<h1>Notices</h1>
+      <p class="muted">Policy change notices are written and synced from the policy repository. Nothing is emailed until you approve one here. Each person gets their own email from ${config.from}, at most ${config.perHour ?? 60} an hour${config.copyTo?.length ? `, and ${config.copyTo.join(', ')} gets a copy` : ''}. Right now that is <strong>${recipients}</strong> ${plural(recipients)}.</p>
+      ${problems.length ? html`<section class="card notice" role="alert"><h2>Draft files with problems</h2><ul>${problems.map((p) => html`<li>${p}</li>`)}</ul></section>` : ''}
+      <h2>Waiting for approval</h2>
+      ${waiting.length
+        ? waiting.map((d) => {
+            const effectiveOn = d.effectiveOn ?? nowIso().slice(0, 10);
+            const days = daysUntil(effectiveOn);
+            const short = days < min;
+            return html`<section class="card">
+          <h3>${d.subject}</h3>
+          <p class="muted">${d.id} · takes effect ${d.effectiveOn ? html`${d.effectiveOn}, ${days} days from today` : 'the day you approve it'}${short ? html` · <strong>less than ${min} days of notice</strong>` : ''}</p>
+          <details><summary>The email</summary><pre class="email">${noticeText({ ...d, effectiveOn }, options.operatorName, config.replyTo)}</pre></details>
+          ${days < 0
+            ? html`<p class="flash flash--error">The effective date has passed. Change it in the draft and sync it again.</p>`
+            : html`<form method="post" action="${base}/notices/approve" class="stack narrow">${csrf}
+              <input type="hidden" name="draft" value="${d.id}">
+              ${short ? html`<label>Reason for less than ${min} days of notice (kept in the audit log) <input name="reason" required maxlength="300"></label>` : ''}
+              <label class="check"><input type="checkbox" name="confirm" value="1" required> I read the email and the date is right</label>
+              <button type="submit">Approve and send to ${recipients} ${plural(recipients)}</button>
+            </form>`}
+        </section>`;
+          })
+        : html`<p class="muted">No drafts are waiting.</p>`}
+      <h2>Sent</h2>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Notice</th><th>Approved</th><th>Takes effect</th><th>Sent</th><th>Failed</th><th></th></tr></thead>
+        <tbody>${store.list().map((n) => html`<tr>
+          <td>${n.subject}<br><span class="muted">${n.source}</span></td>
+          <td>${shortDate(n.createdAt)} by ${n.createdBy}</td>
+          <td>${n.effectiveOn}</td>
+          <td>${n.sent} of ${n.total}</td>
+          <td>${n.failed}</td>
+          <td>${n.failed ? html`<form method="post" action="${base}/notices/${n.id}/retry" class="inline">${csrf}<button type="submit">Retry failed</button></form>` : ''}</td>
+        </tr>`)}</tbody>
+      </table></div>`,
+    );
+  }
+
+  async function approveNotice(ctx: Ctx): Promise<void> {
+    const { store, config } = noticeSetup(ctx);
+    const form = await readForm(ctx);
+    checkPost(ctx, form);
+    if (form.get('confirm') !== '1') throw new HttpError(400, 'Confirm that you read the email');
+    const { drafts } = await loadDrafts(config.draftsDir);
+    const draft = drafts.find((d) => d.id === form.get('draft'));
+    if (!draft) throw new HttpError(404, 'No such draft, or its file has a problem');
+    if (store.list().some((n) => n.source === draft.id)) throw new HttpError(409, 'This notice was already approved');
+    const effectiveOn = draft.effectiveOn ?? nowIso().slice(0, 10);
+    const days = daysUntil(effectiveOn);
+    const min = config.minNoticeDays ?? 30;
+    const reason = (form.get('reason') ?? '').trim().slice(0, 300);
+    if (days < 0) throw new HttpError(400, 'The effective date has passed');
+    if (days < min && !reason) throw new HttpError(400, `Give a reason for less than ${min} days of notice`);
+    const notice = store.create({ source: draft.id, subject: draft.subject, summary: draft.summary, policies: draft.policies, effectiveOn, createdBy: ctx.account!.email, createdAt: nowIso(), recipients: noticeRecipients(store, config) });
+    await audit(ctx, 'notice.approve', notice.id, { source: draft.id, subject: draft.subject, effectiveOn, recipients: notice.total, daysNotice: days, shortNoticeReason: reason || null });
+    void sendNotices().catch(logSendError);
+    redirect(ctx, '/notices?m=noticequeued');
+  }
+
+  async function retryNotice(ctx: Ctx, id: string): Promise<void> {
+    const { store } = noticeSetup(ctx);
+    const form = await readForm(ctx);
+    checkPost(ctx, form);
+    if (!store.get(id)) throw new HttpError(404, 'No such notice');
+    const count = store.retryFailed(id);
+    await audit(ctx, 'notice.retry', id, { deliveries: count });
+    void sendNotices().catch(logSendError);
+    redirect(ctx, '/notices?m=saved');
+  }
+
   // Contracts: private signing links ---------------------------------------------------------------
 
+  // Suggested lengths. Any whole number up to the maximum can be typed instead.
   const EXPIRY_DAYS = [7, 14, 30, 60, 90];
+  const MAX_EXPIRY_DAYS = 365;
   const countryNames = new Intl.DisplayNames(['en'], { type: 'region', fallback: 'code' });
 
   const REVIEW_VIEWS = [1, 3, 5, 10, 15, 25, 50];
+  const MAX_REVIEW_VIEWS = 500;
+
+  /** A whole number from 1 to max, or null. Rejects decimals, signs, exponents and blanks. */
+  function wholeNumber(value: string | null, max: number): number | null {
+    const text = (value ?? '').trim();
+    if (!/^\d{1,4}$/.test(text)) return null;
+    const n = Number(text);
+    return n >= 1 && n <= max ? n : null;
+  }
+
+  /** A number box that offers the suggestions as a list but accepts any whole number in range. */
+  function lengthInput(id: string, name: string, label: string, suggestions: number[], value: number, max: number, unit: string): Raw {
+    return html`<label>${label} <span class="length"><input type="number" id="${id}" name="${name}" min="1" max="${max}" step="1" value="${value}" list="${id}-suggestions" inputmode="numeric" required> ${unit}</span>
+      <span class="muted">Suggested: ${suggestions.join(', ')}. Or type any whole number from 1 to ${max}.</span></label>
+      <datalist id="${id}-suggestions">${suggestions.map((v) => html`<option value="${v}"></option>`)}</datalist>`;
+  }
+
+  function countryOptions(selected?: string): Raw {
+    return html`<option value="">Not sure yet</option>${COUNTRY_CODES.map((code) => html`<option value="${code}" ${code === selected ? raw('selected') : ''}>${countryNames.of(code) ?? code}</option>`)}`;
+  }
+
+  /**
+   * Studio signer details to fill in: the document's `parties.studio`, else its required Studio signer
+   * names, else the signed-in account. A listed person without an email gets the account's email when
+   * their name is the account's name.
+   */
+  function studioDefaults(ctx: Ctx, doc?: LoadedDocument): PartyDetails[] {
+    const me = ctx.account!;
+    const same = (name?: string) => !!name && name.normalize('NFC').trim().toLowerCase() === me.name.normalize('NFC').trim().toLowerCase();
+    const listed: PartyDetails[] = doc?.manifest.parties?.studio ?? doc?.manifest.requiredCounterSigners?.map((name) => ({ name })) ?? [{ name: me.name, email: me.email }];
+    return listed.map((p) => (!p.email && same(p.name) ? { ...p, email: me.email } : p));
+  }
+
+  function docKey(doc: LoadedDocument): string {
+    return `${doc.manifest.id}@${doc.manifest.version}`;
+  }
 
   function reviewState(link: ReviewLink): string {
     if (link.revokedAt) return 'cancelled';
@@ -820,10 +980,10 @@ export async function createAdmin(options: AdminOptions) {
     if (!doc || documents.status(doc) === 'closed') throw new HttpError(400, 'Pick a document that is not closed');
     const label = (form.get('label') ?? '').trim();
     const recipient = (form.get('recipient') ?? '').trim();
-    const days = Number(form.get('days'));
-    const maxViews = Number(form.get('views'));
-    if (!label || label.length > 120 || !recipient || recipient.length > 200 || !EXPIRY_DAYS.includes(days) || !REVIEW_VIEWS.includes(maxViews)) {
-      throw new HttpError(400, 'A label, a recipient name, an expiry and a view limit from the lists are needed');
+    const days = wholeNumber(form.get('days'), MAX_EXPIRY_DAYS);
+    const maxViews = wholeNumber(form.get('views'), MAX_REVIEW_VIEWS);
+    if (!label || label.length > 120 || !recipient || recipient.length > 200 || days === null || maxViews === null) {
+      throw new HttpError(400, `A label, a recipient name, an expiry of 1 to ${MAX_EXPIRY_DAYS} days and a view limit of 1 to ${MAX_REVIEW_VIEWS} are needed`);
     }
     const token = newToken();
     const created = options.now();
@@ -857,12 +1017,13 @@ export async function createAdmin(options: AdminOptions) {
     return (env.status === 'open' || env.status === 'signing') && env.expiresAt < nowIso() ? 'expired' : env.status;
   }
 
-  function studioSignerFields(ctx: Ctx): Raw {
-    return html`<p class="muted">When Studio signatures are required, confirm each person's signing name and email. If the document names two Studio parties, both must be included. Each person draws their own signature through a separate link.</p>
+  function studioSignerFields(ctx: Ctx, doc?: LoadedDocument): Raw {
+    const defaults = studioDefaults(ctx, doc);
+    return html`<p class="muted">When Studio signatures are required, confirm each person's signing name and email. If the document names two Studio parties, both must be included. Each person draws their own signature through a separate link.${doc?.manifest.parties?.studio ? ' Filled in from the contract; check them before sending.' : ''}</p>
       ${[1, 2].map((i) => html`<fieldset><legend>Studio signer ${i}${i === 2 ? ' (optional unless required by the document)' : ''}</legend>
-      <label>Signing name <input name="counter${i}Name" maxlength="200" value="${i === 1 ? ctx.account!.name : ''}"></label>
-      <label>Email <input type="email" name="counter${i}Email" maxlength="254" value="${i === 1 ? ctx.account!.email : ''}"></label>
-      <label>Country <select name="counter${i}Country"><option value="">Not sure yet</option>${COUNTRY_CODES.map((code) => html`<option value="${code}">${countryNames.of(code) ?? code}</option>`)}</select></label></fieldset>`)} `;
+      <label>Signing name <input name="counter${i}Name" maxlength="200" value="${defaults[i - 1]?.name ?? ''}"></label>
+      <label>Email <input type="email" name="counter${i}Email" maxlength="254" value="${defaults[i - 1]?.email ?? ''}"></label>
+      <label>Country <select name="counter${i}Country">${countryOptions(defaults[i - 1]?.country)}</select></label></fieldset>`)} `;
   }
 
   function readStudioSigners(ctx: Ctx, form: URLSearchParams, doc: LoadedDocument): { name: string; email: string; country: string | null }[] {
@@ -888,6 +1049,17 @@ export async function createAdmin(options: AdminOptions) {
     need(ctx, 'owner', 'admin');
     const csrf = csrfField(ctx.session!.csrf);
     const docs = documents.all().filter((d) => documents.status(d) === 'published' && !d.manifest.public && d.manifest.category !== 'disclosure');
+    // ?doc= and ?review= pick the document whose parties fill in each form. With one choice, it is used.
+    const selected = docs.find((d) => docKey(d) === ctx.url.searchParams.get('doc')) ?? (docs.length === 1 ? docs[0] : undefined);
+    const recipient = selected?.manifest.parties?.recipient ?? {};
+    const reviewable = documents.all().filter((d) => documents.status(d) !== 'closed').sort((a, b) => a.manifest.id.localeCompare(b.manifest.id) || b.manifest.version.localeCompare(a.manifest.version));
+    const reviewSelected = reviewable.find((d) => docKey(d) === ctx.url.searchParams.get('review'));
+    const fillLinks = (list: LoadedDocument[], param: string, anchor: string, current?: LoadedDocument): Raw => {
+      const withParties = list.filter((d) => d.manifest.parties || d.manifest.requiredCounterSigners);
+      // A lone signable document is already selected, so it needs no link.
+      if (!withParties.length || (param === 'doc' && list.length === 1)) return raw('');
+      return html`<p class="muted">Fill in the people from a contract: ${withParties.map((d, i) => html`${i ? ', ' : ''}<a href="${base}/contracts?${param}=${encodeURIComponent(docKey(d))}#${anchor}" ${d === current ? raw('aria-current="true"') : ''}>${d.manifest.title} (${d.manifest.version})</a>`)}</p>`;
+    };
     page(
       ctx,
       'Contracts',
@@ -916,18 +1088,20 @@ export async function createAdmin(options: AdminOptions) {
           <td>${shortDate(env.expiresAt)}</td>
         </tr>`)}</tbody>
       </table></div>
-      <section class="card">
+      <section class="card" id="new-contract">
         <h2>New contract link</h2>
         ${docs.length
-          ? html`<form method="post" action="${base}/contracts" class="stack narrow">${csrf}
-          <label>Document <select name="document" required>${docs.map((d) => html`<option value="${d.manifest.id}@${d.manifest.version}">${d.manifest.title} (${d.manifest.version})${d.manifest.requiredCounterSigners?.length ? `; Studio signers required: ${d.manifest.requiredCounterSigners.join(', ')}` : ''}</option>`)}</select></label>
-          <label>Label for your records <input name="label" required maxlength="120"></label>
-          <label>Signer's full legal name <input name="name" required maxlength="200"></label>
-          <label>Signer's email <input type="email" name="email" required maxlength="254"></label>
-          <label>Signer's country, to check the rules there <select name="country"><option value="">Not sure yet</option>${COUNTRY_CODES.map((code) => html`<option value="${code}">${countryNames.of(code) ?? code}</option>`)}</select></label>
-          <label>Link expires in <select name="days">${EXPIRY_DAYS.map((d) => html`<option value="${d}" ${d === 14 ? raw('selected') : ''}>${d} days</option>`)}</select></label>
-          <label class="check"><input type="checkbox" name="counter" value="1"> Require drawn Studio signatures after the recipient signs</label>
-          ${studioSignerFields(ctx)}
+          ? html`${fillLinks(docs, 'doc', 'new-contract', selected)}
+          ${selected?.manifest.parties?.recipient ? html`<p class="muted">Signer details filled in from <strong>${selected.manifest.title} (${selected.manifest.version})</strong>. Check them before sending.</p>` : ''}
+          <form method="post" action="${base}/contracts" class="stack narrow">${csrf}
+          <label>Document <select name="document" required>${docs.map((d) => html`<option value="${docKey(d)}" ${d === selected ? raw('selected') : ''}>${d.manifest.title} (${d.manifest.version})${d.manifest.requiredCounterSigners?.length ? `; Studio signers required: ${d.manifest.requiredCounterSigners.join(', ')}` : ''}</option>`)}</select></label>
+          <label>Label for your records <input name="label" required maxlength="120" value="${selected && recipient.name ? `${selected.manifest.title}: ${recipient.name}`.slice(0, 120) : ''}"></label>
+          <label>Signer's full legal name <input name="name" required maxlength="200" value="${recipient.name ?? ''}"></label>
+          <label>Signer's email <input type="email" name="email" required maxlength="254" value="${recipient.email ?? ''}"></label>
+          <label>Signer's country, to check the rules there <select name="country">${countryOptions(recipient.country)}</select></label>
+          ${lengthInput('contract-days', 'days', 'Link expires in', EXPIRY_DAYS, 14, MAX_EXPIRY_DAYS, 'days')}
+          <label class="check"><input type="checkbox" name="counter" value="1" ${selected?.manifest.requiredCounterSigners?.length ? raw('checked') : ''}> Require drawn Studio signatures after the recipient signs</label>
+          ${studioSignerFields(ctx, selected)}
           <label>Reason, only if the country check below blocks this <input name="override" maxlength="300"></label>
           <button type="submit">Create the link</button>
         </form>`
@@ -947,14 +1121,15 @@ export async function createAdmin(options: AdminOptions) {
           <td>${reviewState(link) === 'active' ? html`<form method="post" action="${base}/review-links/${link.id}/revoke" class="inline">${csrf}<button type="submit">Cancel</button></form>` : ''}</td>
         </tr>`)}</tbody>
       </table></div>
-      <section class="card">
+      <section class="card" id="new-review">
         <h2>New review link</h2>
+        ${fillLinks(reviewable, 'review', 'new-review', reviewSelected)}
         <form method="post" action="${base}/review-links" class="stack narrow">${csrf}
-          <label>Document <select name="document" required>${documents.all().filter((d) => documents.status(d) !== 'closed').sort((a, b) => a.manifest.id.localeCompare(b.manifest.id) || b.manifest.version.localeCompare(a.manifest.version)).map((d) => html`<option value="${d.manifest.id}@${d.manifest.version}">${d.manifest.title} (${d.manifest.version}, ${documents.status(d)})</option>`)}</select></label>
-          <label>Label for your records <input name="label" required maxlength="120"></label>
-          <label>Prepared for (name shown on the page) <input name="recipient" required maxlength="200"></label>
-          <label>Link expires in <select name="days">${EXPIRY_DAYS.map((d) => html`<option value="${d}" ${d === 7 ? raw('selected') : ''}>${d} days</option>`)}</select></label>
-          <label>Views allowed <select name="views">${REVIEW_VIEWS.map((v) => html`<option value="${v}" ${v === 10 ? raw('selected') : ''}>${v}</option>`)}</select></label>
+          <label>Document <select name="document" required>${reviewable.map((d) => html`<option value="${docKey(d)}" ${d === reviewSelected ? raw('selected') : ''}>${d.manifest.title} (${d.manifest.version}, ${documents.status(d)})</option>`)}</select></label>
+          <label>Label for your records <input name="label" required maxlength="120" value="${reviewSelected?.manifest.parties?.recipient?.name ? `Review: ${reviewSelected.manifest.title}`.slice(0, 120) : ''}"></label>
+          <label>Prepared for (name shown on the page) <input name="recipient" required maxlength="200" value="${reviewSelected?.manifest.parties?.recipient?.name ?? ''}"></label>
+          ${lengthInput('review-days', 'days', 'Link expires in', EXPIRY_DAYS, 7, MAX_EXPIRY_DAYS, 'days')}
+          ${lengthInput('review-views', 'views', 'Views allowed', REVIEW_VIEWS, 10, MAX_REVIEW_VIEWS, 'views')}
           <button type="submit">Create the review link</button>
         </form>
       </section>`,
@@ -972,10 +1147,10 @@ export async function createAdmin(options: AdminOptions) {
     const label = (form.get('label') ?? '').trim();
     const name = (form.get('name') ?? '').trim();
     const email = (form.get('email') ?? '').trim().toLowerCase();
-    const days = Number(form.get('days'));
+    const days = wholeNumber(form.get('days'), MAX_EXPIRY_DAYS);
     const country = (form.get('country') ?? '').trim();
-    if (!label || label.length > 120 || !name || name.length > 200 || !/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(email) || email.length > 254 || !EXPIRY_DAYS.includes(days) || (country && !isCountryCode(country))) {
-      throw new HttpError(400, 'Label, name, a valid email and an expiry from the list are needed');
+    if (!label || label.length > 120 || !name || name.length > 200 || !/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(email) || email.length > 254 || days === null || (country && !isCountryCode(country))) {
+      throw new HttpError(400, `Label, name, a valid email and an expiry of 1 to ${MAX_EXPIRY_DAYS} days are needed`);
     }
     // Review the signer's country before a link exists. A document the law there excludes from simple
     // e-signatures needs a stated reason to proceed, and the reason is kept in the audit log.
@@ -1054,7 +1229,7 @@ export async function createAdmin(options: AdminOptions) {
           return html`<li><strong>${party.name}</strong> (${party.email}): ${child?.status === 'complete' ? html`Signed; <a href="${base}/submissions/${child.recordId}">view sealed signature record</a>` : 'not signed'}
           ${env.status === 'awaiting-countersignature' && child?.status !== 'complete' ? html`<form method="post" action="${base}/contracts/${env.id}/countersign" class="inline">${csrf}<input type="hidden" name="party" value="${party.id}"><button type="submit">${child ? 'Replace unsigned signing link' : 'Create signing link'} for ${party.name}</button></form>` : ''}</li>`;
         })}</ul>` : ''}
-        ${env.status === 'awaiting-countersignature' && !studioSigners.length ? html`<form method="post" action="${base}/contracts/${env.id}/configure-countersigners" class="stack narrow">${csrf}<h2>Confirm Studio signers</h2>${studioSignerFields(ctx)}<button type="submit">Confirm required Studio signers</button></form>` : ''}
+        ${env.status === 'awaiting-countersignature' && !studioSigners.length ? html`<form method="post" action="${base}/contracts/${env.id}/configure-countersigners" class="stack narrow">${csrf}<h2>Confirm Studio signers</h2>${studioSignerFields(ctx, documents.get(env.documentId, env.documentVersion))}<button type="submit">Confirm required Studio signers</button></form>` : ''}
         ${env.status === 'awaiting-countersignature' ? html`<p class="muted">Each Studio signer must use their own signing link and draw their signature. This contract completes only after every required Studio signer has signed. Creating a link does not sign for them.</p>` : ''}
       </section>`,
     );
@@ -1410,6 +1585,7 @@ export async function createAdmin(options: AdminOptions) {
         else if (path === '/documents') documentsPage(ctx);
         else if (path === '/contracts') contractsPage(ctx);
         else if (path === '/site') await sitePage(ctx);
+        else if (path === '/notices') await noticesPage(ctx);
         else if (parts[0] === 'contracts' && parts.length === 2) contractPage(ctx, db.envelope(parts[1]!) ?? (() => { throw new HttpError(404, 'No such contract'); })());
         else if (parts[0] === 'documents' && parts.length === 3) documentPage(ctx, findDoc(parts[1]!, parts[2]!));
         else if (path === '/accounts') accountsPage(ctx);
@@ -1426,6 +1602,8 @@ export async function createAdmin(options: AdminOptions) {
         else if (parts[0] === 'documents' && parts.length === 4 && parts[3] === 'status') await setDocumentStatus(ctx, findDoc(parts[1]!, parts[2]!));
         else if (path === '/contracts') await createContract(ctx);
         else if (path === '/review-links') await createReviewLink(ctx);
+        else if (path === '/notices/approve') await approveNotice(ctx);
+        else if (parts[0] === 'notices' && parts.length === 3 && parts[2] === 'retry') await retryNotice(ctx, parts[1]!);
         else if (parts[0] === 'review-links' && parts.length === 3) await reviewLinkAction(ctx, parts[1]!, parts[2]!);
         else if (parts[0] === 'site' && parts.length >= 2) await siteAction(ctx, parts.slice(1).join('/'));
         else if (parts[0] === 'contracts' && parts.length === 3) await contractAction(ctx, parts[1]!, parts[2]!);
@@ -1464,7 +1642,7 @@ export async function createAdmin(options: AdminOptions) {
     return !!account && !account.disabled;
   }
 
-  return { route, db, isSignedIn };
+  return { route, db, isSignedIn, notices, sendNotices, stop: () => clearInterval(noticeTimer) };
 }
 
 /** "2026-11-16 13:05 UTC": a document version's last-edited time for the dashboard. Empty when unknown. */

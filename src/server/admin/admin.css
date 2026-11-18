@@ -260,6 +260,31 @@ textarea {
   border: 1px solid var(--line);
   border-radius: 6px;
 }
+.length {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 400;
+}
+.length input:not([type='hidden']) {
+  width: 8rem;
+}
+pre.email {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+label.check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+label.check input {
+  width: auto;
+  min-height: 0;
+}
+label > .muted {
+  font-weight: 400;
+}
 .filters {
   display: flex;
   flex-wrap: wrap;

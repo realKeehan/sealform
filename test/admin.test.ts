@@ -1428,3 +1428,160 @@ test('a review link is view only, counts views, expires and can be cancelled', a
     await app.stop();
   }
 });
+
+test('contract forms fill in the people from the document and accept typed lengths', async () => {
+  const app = await start('parties-and-lengths');
+  try {
+    const owner = await ownerSession(app);
+    const contract = (await owner.get('/contracts?doc=partner-contract%40PARTNER-1')).text;
+    assert.match(contract, /name="name" required maxlength="200" value="Pat Partner"/);
+    assert.match(contract, /name="email" required maxlength="254" value="pat@example.org"/);
+    assert.match(contract, /<select name="country">.*<option value="DE" selected>/s);
+    assert.match(contract, /name="counter1Name" maxlength="200" value="Sam Studio"/);
+    assert.match(contract, /name="counter1Email" maxlength="254" value="sam@example.org"/);
+    assert.match(contract, /<select name="counter1Country">.*<option value="US" selected>/s);
+    assert.match(contract, /<input type="number" id="contract-days" name="days" min="1" max="365"[^>]*list="contract-days-suggestions"/);
+    assert.match(contract, /<datalist id="review-views-suggestions"><option value="1"><\/option>/);
+    const review = (await owner.get('/contracts?review=partner-contract%40PARTNER-1')).text;
+    assert.match(review, /name="recipient" required maxlength="200" value="Pat Partner"/);
+
+    // Any whole number in range works; the suggestions are not a limit.
+    assert.ok((await createLink(owner, { label: 'Typed', email: 'typed@example.org', days: '45' })).token);
+    const env = app.admin.envelopes().find((e) => e.label === 'Typed')!;
+    assert.equal(Date.parse(env.expiresAt) - Date.parse(env.createdAt), 45 * 86_400_000);
+    for (const days of ['0', '366', '1.5', '1e2', '-3', '']) {
+      assert.equal((await createLink(owner, { label: `Bad ${days}`, email: 'bad@example.org', days })).response.status, 400, `days ${JSON.stringify(days)}`);
+    }
+    const csrf = await owner.csrf('/contracts');
+    const makeReview = (fields: Record<string, string>) => owner.post('/review-links', { csrf, document: 'partner-contract@PARTNER-1', label: 'Typed review', recipient: 'Pat Partner', days: '200', views: '7', ...fields });
+    assert.equal((await makeReview({})).status, 200);
+    assert.ok(app.admin.reviewLinks().some((l) => l.maxViews === 7 && Date.parse(l.expiresAt) - Date.parse(l.createdAt) === 200 * 86_400_000));
+    for (const views of ['0', '501', '2.5']) assert.equal((await makeReview({ views })).status, 400, `views ${views}`);
+  } finally {
+    await app.stop();
+  }
+});
+
+test('a manifest with bad party details is refused', async () => {
+  const { cp, readFile, writeFile } = await import('node:fs/promises');
+  const { DocumentRegistry, defaultChecks } = await import('../src/server/index.ts');
+  const manifestPath = (dir: string) => join(dir, 'partner-contract', 'PARTNER-1', 'document.json');
+  const cases: [unknown, RegExp][] = [
+    [{ recipient: { email: 'not-an-email' } }, /parties\.recipient\.email/],
+    [{ recipient: { country: 'Argentina' } }, /parties\.recipient\.country/],
+    [{ recipient: { name: 'Pat', phone: '1' } }, /unknown key phone/],
+    [{ studio: [] }, /one or two Studio signers/],
+    [{ studio: [{ name: 'A', email: 'same@example.org' }, { name: 'B', email: 'SAME@example.org' }] }, /different emails/],
+  ];
+  for (const [parties, error] of cases) {
+    const dir = await mkdtemp(join(tmpdir(), 'sealform-parties-'));
+    try {
+      await cp(FIXTURES, dir, { recursive: true });
+      const manifest = JSON.parse(await readFile(manifestPath(dir), 'utf8'));
+      await writeFile(manifestPath(dir), JSON.stringify({ ...manifest, parties }));
+      await assert.rejects(DocumentRegistry.load(dir, defaultChecks()), error);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+});
+
+test('an autoAccept document stores new submissions as accepted; others stay pending', async () => {
+  const { cp, readFile, writeFile } = await import('node:fs/promises');
+  const docs = await mkdtemp(join(tmpdir(), 'sealform-auto-'));
+  await cp(FIXTURES, docs, { recursive: true });
+  const path = join(docs, 'example-agreement', 'EXAMPLE-1', 'document.json');
+  const before = JSON.parse(await readFile(path, 'utf8'));
+  const plain = await start('auto-accept-off');
+  let auto: Awaited<ReturnType<typeof start>> | undefined;
+  try {
+    const off = await sign(plain, 'Pat Pending', 'pending@example.org');
+    assert.equal(plain.sealform.store.summary(off)!.applicationStatus, 'pending');
+    await writeFile(path, JSON.stringify({ ...before, autoAccept: true }));
+    auto = await start('auto-accept-on', { documentsDir: docs });
+    const on = await sign(auto, 'Ann Auto', 'auto@example.org');
+    assert.equal(auto.sealform.store.summary(on)!.applicationStatus, 'accepted');
+    // autoAccept is operational, so it does not change the hash signers' records point to.
+    assert.equal(auto.sealform.documents.get('example-agreement', 'EXAMPLE-1')!.manifestSha256, plain.sealform.documents.get('example-agreement', 'EXAMPLE-1')!.manifestSha256);
+  } finally {
+    await plain.stop();
+    await auto?.stop();
+    await rm(docs, { recursive: true, force: true });
+  }
+});
+
+test('policy notices: drafts are approved on the dashboard, then each signer gets their own email within the hourly cap', async () => {
+  const { writeFile } = await import('node:fs/promises');
+  const drafts = await mkdtemp(join(tmpdir(), 'sealform-notices-'));
+  const sent: { to: string; from: string; replyTo?: string; subject: string; text: string }[] = [];
+  let failFor = '';
+  const noticeMailer = {
+    async send(message: { to: string; from: string; replyTo?: string; subject: string; text: string }) {
+      if (message.to === failFor) throw new Error('mailbox full');
+      sent.push(message);
+      return { id: String(sent.length) };
+    },
+  };
+  const app = await start('notices', {
+    notices: { mailer: noticeMailer, from: 'Example Studio <noreply@example.com>', replyTo: 'legal@example.com', copyTo: ['legal@example.com'], perHour: 2, minNoticeDays: 30, draftsDir: drafts },
+  });
+  try {
+    await sign(app, 'Ann One', 'ann@example.org');
+    await sign(app, 'Ann One', 'ANN@example.org');
+    await sign(app, 'Bo Two', 'bo@example.org');
+    const day = (offset: number) => new Date(clock + offset * 86_400_000).toISOString().slice(0, 10);
+    const draft = { id: 'terms-update', subject: 'Changes to our terms', policies: [{ name: 'Studio Terms', url: 'https://example.com/terms/' }], summary: 'We added a section on refunds.', effectiveOn: day(40) };
+    await writeFile(join(drafts, 'terms-update.json'), JSON.stringify(draft));
+    await writeFile(join(drafts, 'broken.json'), JSON.stringify({ ...draft, id: 'other-name' }));
+    await writeFile(join(drafts, 'soon.json'), JSON.stringify({ ...draft, id: 'soon', effectiveOn: day(5) }));
+    const { effectiveOn: _unused, ...undated } = draft;
+    await writeFile(join(drafts, 'today.json'), JSON.stringify({ ...undated, id: 'today' }));
+
+    const owner = await ownerSession(app);
+    const pageText = (await owner.get('/notices')).text;
+    assert.match(pageText, /Changes to our terms/);
+    assert.match(pageText, /broken\.json: id must/);
+    assert.match(pageText, /<strong>3<\/strong> addresses/, 'two signers once each, plus the copy');
+    assert.match(pageText, /We added a section on refunds\./);
+    assert.match(pageText, /Reason for less than 30 days/);
+    assert.match(pageText, /today · takes effect the day you approve it/);
+    assert.equal(sent.length, 0, 'nothing is sent before approval');
+
+    const csrf = await owner.csrf('/notices');
+    assert.equal((await owner.post('/notices/approve', { csrf, draft: 'terms-update' })).status, 400, 'needs the confirmation');
+    assert.equal((await owner.post('/notices/approve', { csrf, draft: 'soon', confirm: '1' })).status, 400, 'short notice needs a reason');
+    assert.equal((await owner.post('/notices/approve', { csrf, draft: 'terms-update', confirm: '1' })).status, 303);
+    await app.sealform.sendNotices();
+    assert.equal(sent.length, 2, 'the hourly cap holds');
+    assert.equal(await app.sealform.sendNotices(), 0);
+    clock += 3_600_001;
+    await app.sealform.sendNotices();
+    assert.deepEqual(sent.map((m) => m.to).sort(), ['ann@example.org', 'bo@example.org', 'legal@example.com']);
+    for (const m of sent) {
+      assert.equal(m.from, 'Example Studio <noreply@example.com>');
+      assert.equal(m.replyTo, 'legal@example.com');
+      assert.match(m.text, /We added a section on refunds\./);
+      assert.match(m.text, /Studio Terms: https:\/\/example\.com\/terms\//);
+      assert.match(m.text, /we're making changes to our Studio Terms\. Here's what's changing:/);
+      assert.match(m.text, /Thank you for being part of Example Studio!/);
+    }
+    assert.equal((await owner.post('/notices/approve', { csrf, draft: 'terms-update', confirm: '1' })).status, 409, 'once only');
+    assert.doesNotMatch((await owner.get('/notices')).text, /name="draft" value="terms-update"/, 'an approved draft leaves the waiting list');
+
+    // A failing address is retried, then marked failed, and can be queued again.
+    failFor = 'bo@example.org';
+    assert.equal((await owner.post('/notices/approve', { csrf, draft: 'soon', confirm: '1', reason: 'Required by a new law' })).status, 303);
+    for (let i = 0; i < 4; i++) {
+      clock += 3_600_001;
+      await app.sealform.sendNotices();
+    }
+    const statusOf = () => (app.sealform.store.database.prepare("SELECT d.status FROM notice_deliveries d JOIN notices n ON n.id = d.notice_id WHERE n.source = 'soon' AND d.email = 'bo@example.org'").get() as { status: string }).status;
+    assert.equal(statusOf(), 'failed', 'three attempts, then failed');
+    assert.equal(sent.filter((m) => m.to === 'ann@example.org').length, 2, 'the other signer still got the second notice');
+    const audit = app.admin.auditEntries().map((e) => e.action);
+    assert.ok(audit.includes('notice.approve'));
+  } finally {
+    await app.stop();
+    await rm(drafts, { recursive: true, force: true });
+  }
+});

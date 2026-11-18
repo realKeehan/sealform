@@ -52,5 +52,19 @@
   "retention": {
     "signed": "P6Y",
     "unsigned": "P90D"
+  },
+  "parties": {
+    "recipient": {
+      "name": "Pat Partner",
+      "email": "pat@example.org",
+      "country": "DE"
+    },
+    "studio": [
+      {
+        "name": "Sam Studio",
+        "email": "sam@example.org",
+        "country": "US"
+      }
+    ]
   }
 }

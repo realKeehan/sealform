@@ -40,6 +40,8 @@ export interface AppendMeta {
   email: string | null;
   country: string | null;
   receiptTokenHash: string;
+  /** Initial application status; the table default is 'pending'. */
+  applicationStatus?: 'pending' | 'accepted';
 }
 
 const SCHEMA = `
@@ -160,10 +162,10 @@ export class SqliteStore {
         if (record.chain.seq !== seq || record.chain.prevHash !== prevHash) throw new Error('Record was built for a different chain position');
         this.db
           .prepare(
-            `INSERT INTO records (seq, id, document_id, document_version, signer_name, email, country, received_at, hash, entry_json, receipt_token_hash)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            `INSERT INTO records (seq, id, document_id, document_version, signer_name, email, country, received_at, hash, entry_json, receipt_token_hash, application_status)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           )
-          .run(seq, record.id, record.document.id, record.document.version, meta.signerName, meta.email, meta.country, record.server.receivedAt, record.hash, JSON.stringify(record), meta.receiptTokenHash);
+          .run(seq, record.id, record.document.id, record.document.version, meta.signerName, meta.email, meta.country, record.server.receivedAt, record.hash, JSON.stringify(record), meta.receiptTokenHash, meta.applicationStatus ?? 'pending');
         this.db.exec('COMMIT');
       } catch (error) {
         this.db.exec('ROLLBACK');
