@@ -1428,3 +1428,60 @@ test('a review link is view only, counts views, expires and can be cancelled', a
     await app.stop();
   }
 });
+
+test('contract forms fill in the people from the document and accept typed lengths', async () => {
+  const app = await start('parties-and-lengths');
+  try {
+    const owner = await ownerSession(app);
+    const contract = (await owner.get('/contracts?doc=partner-contract%40PARTNER-1')).text;
+    assert.match(contract, /name="name" required maxlength="200" value="Pat Partner"/);
+    assert.match(contract, /name="email" required maxlength="254" value="pat@example.org"/);
+    assert.match(contract, /<select name="country">.*<option value="DE" selected>/s);
+    assert.match(contract, /name="counter1Name" maxlength="200" value="Sam Studio"/);
+    assert.match(contract, /name="counter1Email" maxlength="254" value="sam@example.org"/);
+    assert.match(contract, /<select name="counter1Country">.*<option value="US" selected>/s);
+    assert.match(contract, /<input type="number" id="contract-days" name="days" min="1" max="365"[^>]*list="contract-days-suggestions"/);
+    assert.match(contract, /<datalist id="review-views-suggestions"><option value="1"><\/option>/);
+    const review = (await owner.get('/contracts?review=partner-contract%40PARTNER-1')).text;
+    assert.match(review, /name="recipient" required maxlength="200" value="Pat Partner"/);
+
+    // Any whole number in range works; the suggestions are not a limit.
+    assert.ok((await createLink(owner, { label: 'Typed', email: 'typed@example.org', days: '45' })).token);
+    const env = app.admin.envelopes().find((e) => e.label === 'Typed')!;
+    assert.equal(Date.parse(env.expiresAt) - Date.parse(env.createdAt), 45 * 86_400_000);
+    for (const days of ['0', '366', '1.5', '1e2', '-3', '']) {
+      assert.equal((await createLink(owner, { label: `Bad ${days}`, email: 'bad@example.org', days })).response.status, 400, `days ${JSON.stringify(days)}`);
+    }
+    const csrf = await owner.csrf('/contracts');
+    const makeReview = (fields: Record<string, string>) => owner.post('/review-links', { csrf, document: 'partner-contract@PARTNER-1', label: 'Typed review', recipient: 'Pat Partner', days: '200', views: '7', ...fields });
+    assert.equal((await makeReview({})).status, 200);
+    assert.ok(app.admin.reviewLinks().some((l) => l.maxViews === 7 && Date.parse(l.expiresAt) - Date.parse(l.createdAt) === 200 * 86_400_000));
+    for (const views of ['0', '501', '2.5']) assert.equal((await makeReview({ views })).status, 400, `views ${views}`);
+  } finally {
+    await app.stop();
+  }
+});
+
+test('a manifest with bad party details is refused', async () => {
+  const { cp, readFile, writeFile } = await import('node:fs/promises');
+  const { DocumentRegistry, defaultChecks } = await import('../src/server/index.ts');
+  const manifestPath = (dir: string) => join(dir, 'partner-contract', 'PARTNER-1', 'document.json');
+  const cases: [unknown, RegExp][] = [
+    [{ recipient: { email: 'not-an-email' } }, /parties\.recipient\.email/],
+    [{ recipient: { country: 'Argentina' } }, /parties\.recipient\.country/],
+    [{ recipient: { name: 'Pat', phone: '1' } }, /unknown key phone/],
+    [{ studio: [] }, /one or two Studio signers/],
+    [{ studio: [{ name: 'A', email: 'same@example.org' }, { name: 'B', email: 'SAME@example.org' }] }, /different emails/],
+  ];
+  for (const [parties, error] of cases) {
+    const dir = await mkdtemp(join(tmpdir(), 'sealform-parties-'));
+    try {
+      await cp(FIXTURES, dir, { recursive: true });
+      const manifest = JSON.parse(await readFile(manifestPath(dir), 'utf8'));
+      await writeFile(manifestPath(dir), JSON.stringify({ ...manifest, parties }));
+      await assert.rejects(DocumentRegistry.load(dir, defaultChecks()), error);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+});

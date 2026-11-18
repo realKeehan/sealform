@@ -647,7 +647,7 @@ export { defaultChecks, CheckNotConfiguredError, type Check } from './checks.ts'
 export { hashPassword, passwordProblem, ROLES, type Role } from './admin/index.ts';
 export { CloudflareAccess, type AccessConfig, type AccessIdentity } from './admin/access.ts';
 export { AdminStore } from './admin/db.ts';
-export { DocumentRegistry, type DocumentManifest, type FieldSpec, type ConsentSpec } from './documents.ts';
+export { DocumentRegistry, type DocumentManifest, type FieldSpec, type ConsentSpec, type PartyDetails } from './documents.ts';
 export { NoBotCheck, RateLimiter, TurnstileCheck, type BotCheck } from './guards.ts';
 export { OutboxMailer, toMime, type Mailer, type MailMessage } from './mailer.ts';
 export { SqliteStore, type RecordSummary } from './store.ts';

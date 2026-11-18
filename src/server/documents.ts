@@ -4,7 +4,7 @@
 
 import { readdir, readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
-import { sha256Canonical, sha256Hex } from '../core/index.ts';
+import { isCountryCode, sha256Canonical, sha256Hex } from '../core/index.ts';
 import type { Check } from './checks.ts';
 
 export type FieldType = 'text' | 'email' | 'country' | 'select' | 'textarea' | 'checkbox';
@@ -49,6 +49,19 @@ export interface DocumentManifest {
   public: boolean;
   /** Studio parties whose own drawn signatures are required for a private contract. */
   requiredCounterSigners?: string[];
+  /**
+   * Who the contract is between, used only to fill in the dashboard's link forms. Not shown to the
+   * signer and never hashed, so it can be corrected without changing a version.
+   */
+  parties?: { recipient?: PartyDetails; studio?: PartyDetails[] };
+}
+
+/** Prefill details for one party. Every part is optional; the dashboard still asks for anything missing. */
+export interface PartyDetails {
+  name?: string;
+  email?: string;
+  /** ISO 3166-1 alpha-2, for example "AR". */
+  country?: string;
 }
 
 export interface LoadedText {
@@ -212,6 +225,7 @@ function validateManifest(value: unknown, where: string): DocumentManifest {
   if (typeof m.public !== 'boolean') fail('public must be true or false');
   if (m.requiredCounterSigners !== undefined && (!Array.isArray(m.requiredCounterSigners) || m.requiredCounterSigners.length < 1 || m.requiredCounterSigners.length > 2 || !m.requiredCounterSigners.every((name) => typeof name === 'string' && name.trim().length > 0 && name.length <= 200) || new Set(m.requiredCounterSigners.map((name) => name.normalize('NFC').trim().toLowerCase())).size !== m.requiredCounterSigners.length)) fail('requiredCounterSigners must name one or two distinct Studio signers');
   if (m.requiredCounterSigners?.length && m.public) fail('requiredCounterSigners are for private contracts only');
+  if (m.parties !== undefined) validateParties(m.parties, m.public === true, fail);
   if (!m.retention || !DURATION.test(m.retention.signed ?? '') || !DURATION.test(m.retention.unsigned ?? '')) fail('retention.signed and retention.unsigned must be ISO 8601 durations such as P4Y');
 
   const names = new Set<string>();
@@ -232,6 +246,29 @@ function validateManifest(value: unknown, where: string): DocumentManifest {
   }
   return m as DocumentManifest;
 }
+
+function validateParties(parties: unknown, isPublic: boolean, fail: (message: string) => never): void {
+  const p = parties as DocumentManifest['parties'];
+  if (!p || typeof p !== 'object' || Array.isArray(p)) fail('parties must be an object with recipient and/or studio');
+  if (isPublic) fail('parties are for private contracts only');
+  const check = (party: unknown, where: string): void => {
+    const d = party as PartyDetails;
+    if (!d || typeof d !== 'object' || Array.isArray(d)) fail(`${where} must be an object`);
+    for (const k of Object.keys(d)) if (!['name', 'email', 'country'].includes(k)) fail(`${where} has unknown key ${k}`);
+    if (d.name !== undefined && (typeof d.name !== 'string' || !d.name.trim() || d.name.length > 200)) fail(`${where}.name must be 1-200 characters`);
+    if (d.email !== undefined && (typeof d.email !== 'string' || d.email.length > 254 || !EMAIL.test(d.email))) fail(`${where}.email must be a valid email`);
+    if (d.country !== undefined && !isCountryCode(d.country)) fail(`${where}.country must be an ISO country code such as AR`);
+  };
+  if (p!.recipient !== undefined) check(p!.recipient, 'parties.recipient');
+  if (p!.studio !== undefined) {
+    if (!Array.isArray(p!.studio) || p!.studio.length < 1 || p!.studio.length > 2) fail('parties.studio must list one or two Studio signers');
+    p!.studio.forEach((party, i) => check(party, `parties.studio[${i}]`));
+    const emails = p!.studio.map((s) => s.email?.toLowerCase()).filter(Boolean);
+    if (new Set(emails).size !== emails.length) fail('parties.studio signers must use different emails');
+  }
+}
+
+const EMAIL = /^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/;
 
 function key(id: string, version: string): string {
   return `${id}@${version}`;
