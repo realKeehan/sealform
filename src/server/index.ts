@@ -29,7 +29,7 @@ import {
   type SealingKey,
 } from '../core/index.ts';
 import { defaultChecks, type Check } from './checks.ts';
-import { DocumentRegistry, type LoadedDocument } from './documents.ts';
+import { DocumentRegistry, type FieldSpec, type LoadedDocument } from './documents.ts';
 import { NoBotCheck, RateLimiter, type BotCheck } from './guards.ts';
 import { clientIp, header, HttpError, readJson, sendBytes, sendJson, type ClientIpSource } from './http.ts';
 import { OutboxMailer, type Mailer } from './mailer.ts';
@@ -192,6 +192,11 @@ export async function createSealform(config: SealformConfig): Promise<Sealform> 
     return out;
   }
 
+  /** A countersigner (a Studio party) is not asked for the fields marked recipientOnly. */
+  function fieldsFor(doc: LoadedDocument, countersigner: boolean): FieldSpec[] {
+    return countersigner ? doc.manifest.fields.filter((field) => !field.recipientOnly) : doc.manifest.fields;
+  }
+
   /** A link that can still be used to sign, or the reason it cannot. */
   function openEnvelope(token: string): Envelope {
     const found = admin && /^[A-Za-z0-9_-]{43}$/.test(token) ? admin.db.envelopeByTokenHash(hashToken(token)) : undefined;
@@ -242,7 +247,7 @@ export async function createSealform(config: SealformConfig): Promise<Sealform> 
     sendJson(res, 200, {
       document: { id: doc.manifest.id, version: doc.manifest.version, title: doc.manifest.title, category: doc.manifest.category, lang, languages: envelope && admin!.db.counterSignerForChild(envelope.id) ? [lang] : doc.manifest.languages, governingLang: doc.manifest.governingLang, text: text.text, sha256: text.sha256, manifestSha256: doc.manifestSha256 },
       disclosure: disclosure && disclosureText ? { id: disclosure.manifest.id, version: disclosure.manifest.version, lang: disclosureText.lang, text: disclosureText.text, sha256: disclosureText.sha256 } : null,
-      fields: doc.manifest.fields,
+      fields: fieldsFor(doc, !!envelope && !!admin!.db.counterSignerForChild(envelope.id)),
       consents: doc.manifest.consents,
       requiredChecks: doc.manifest.requiredChecks,
       session: { id: session.id, expiresAt: session.expiresAt },
@@ -265,9 +270,10 @@ export async function createSealform(config: SealformConfig): Promise<Sealform> 
     const countrySpec = doc.manifest.fields.find((field) => field.role === 'country' || field.type === 'country');
     const rawCountry = countrySpec ? ((body.fields ?? {}) as Record<string, unknown>)[countrySpec.name] : undefined;
     const jurisdiction = typeof rawCountry === 'string' && isCountryCode(rawCountry) ? profiles.resolve(rawCountry) : undefined;
+    const askedFields = fieldsFor(doc, !!counterParty);
     const effective = jurisdiction
-      ? { ...doc.manifest, fields: [...doc.manifest.fields, ...jurisdiction.loaded.profile.requiredFields.filter((extra) => !doc.manifest.fields.some((own) => own.name === extra.name)).map((extra) => ({ ...extra }))] }
-      : doc.manifest;
+      ? { ...doc.manifest, fields: [...askedFields, ...jurisdiction.loaded.profile.requiredFields.filter((extra) => !doc.manifest.fields.some((own) => own.name === extra.name)).map((extra) => ({ ...extra }))] }
+      : counterParty ? { ...doc.manifest, fields: askedFields } : doc.manifest;
     const request = parseSignRequest(body, effective);
     if (!envelope && !(await botCheck.verify(request.botToken, ip))) throw new HttpError(403, 'The bot check failed. Please try again.');
     if (envelope) {

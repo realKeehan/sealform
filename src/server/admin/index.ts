@@ -582,7 +582,7 @@ export async function createAdmin(options: AdminOptions) {
       ${record
         ? html`<section class="card">
           <h2>Answers</h2>
-          <dl class="facts">${(doc?.manifest.fields ?? Object.keys(record.fields).map((name) => ({ name, label: name }))).map(
+          <dl class="facts">${(doc?.manifest.fields.filter((field) => !(field.recipientOnly && record.envelope?.role === 'countersigner')) ?? Object.keys(record.fields).map((name) => ({ name, label: name }))).map(
             (field) => html`<dt>${field.label}</dt><dd>${formatValue(record.fields[field.name])}</dd>`,
           )}</dl>
           <h2>Agreed to</h2>

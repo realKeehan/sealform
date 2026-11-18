@@ -927,6 +927,46 @@ test('a private link signs once and requires a separate drawn Studio signature',
   }
 });
 
+test('a recipientOnly field is asked of the recipient and never of the Studio countersigner', async () => {
+  const docs = join(dir, 'docs-recipient-only');
+  const { cp, readFile, writeFile } = await import('node:fs/promises');
+  await cp(FIXTURES, docs, { recursive: true });
+  const manifestPath = join(docs, 'partner-contract', 'PARTNER-1', 'document.json');
+  const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+  manifest.fields.push({ name: 'taxId', label: 'Tax number', type: 'text', required: true, recipientOnly: true });
+  await writeFile(manifestPath, JSON.stringify(manifest));
+  const app = await start('recipient-only', { documentsDir: docs });
+  try {
+    const owner = await ownerSession(app);
+    const { token, csrf } = await createLink(owner);
+    const names = async (t: string) => ((await (await fetch(`${app.url}/sealform/api/envelopes/${t}`)).json()) as { fields: { name: string }[] }).fields.map((f) => f.name);
+    assert.ok((await names(token!)).includes('taxId'), 'the recipient is asked');
+
+    const missing = await signLink(app, token!);
+    assert.equal(missing.status, 422, 'the recipient cannot skip it');
+    assert.ok((((await missing.json()) as { fields: Record<string, string> }).fields)['fields.taxId']);
+    const signed = await signLink(app, token!, { fields: { legalName: 'Pat Partner', email: 'pat@example.org', country: 'DE', taxId: '20-12345678-3' } });
+    assert.equal(signed.status, 201, await signed.clone().text());
+    const env = app.admin.envelopes()[0]!;
+
+    const party = app.admin.counterSigners(env.id)[0]!;
+    const link = await owner.post(`/contracts/${env.id}/countersign`, { csrf, party: party.id });
+    const childToken = /\/sealform\/c\/([A-Za-z0-9_-]{43})</.exec(link.text)![1]!;
+    assert.ok(!(await names(childToken)).includes('taxId'), 'the Studio signer is not asked');
+    const countersign = { legalName: party.name, email: party.email, country: 'DE' };
+    const sig = { typedName: party.name, vector: [{ points: stroke() }], png: png() };
+    const sneaked = await signLink(app, childToken, { fields: { ...countersign, taxId: '1' }, signature: sig });
+    assert.equal(sneaked.status, 422, 'a Studio signer cannot submit it either');
+    const childSigned = await signLink(app, childToken, { fields: countersign, signature: sig });
+    assert.equal(childSigned.status, 201, await childSigned.clone().text());
+    const childRecord = app.sealform.store.getEntry(((await childSigned.json()) as { id: string }).id) as SealformRecord;
+    assert.equal(childRecord.fields.taxId, undefined);
+    assert.equal(app.admin.envelope(env.id)!.status, 'complete');
+  } finally {
+    await app.stop();
+  }
+});
+
 test('both named Studio parties must draw signatures, with replaceable unused links and the original closed version', async () => {
   const docs = join(dir, 'docs-two-studio');
   const { cp, readFile, writeFile } = await import('node:fs/promises');

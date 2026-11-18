@@ -232,6 +232,8 @@ its hosted signing page needs no site of yours. Entering the signer's country ch
 against that country's profile first; if the law there excludes this kind of document, creating the link
 needs a stated reason, which is kept in the audit log.
 
+A field marked `"recipientOnly": true` in the manifest (for example a tax or identity number that only the counterparty gives) is asked of the recipient and never of the Studio countersigners: their form omits it, their record has no value for it, and a value sent anyway is refused. The flag is part of the hashed manifest, so adding it is a new document version. A field with a `role` cannot be `recipientOnly`.
+
 Countersigning requires each Studio party to draw their own signature through a separate private link. Configure one or two Studio signers when making the contract. Set `requiredCounterSigners` to their exact signing names in a private document manifest to enforce both named parties. After the recipient signs, open the contract and create each person's signing link. Creating a link does not sign for them. Replacing an unused link revokes its previous token. Completion requires every configured Studio signature; each sealed record references the original record hash, and the final hash and audit entry reference all signatures. Existing completed dashboard approvals retain their historical status and are labelled as legacy approvals.
 
 To skip retyping who a contract is between, give the private manifest a `parties` block. The **Contracts**
