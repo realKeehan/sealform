@@ -343,6 +343,8 @@ export async function createSealform(config: SealformConfig): Promise<Sealform> 
           email: receiptTo ?? null,
           country: countryField ? String(request.fields[countryField.name] ?? '') || null : null,
           receiptTokenHash: hashToken(receiptToken),
+          // Contract links stay pending; only a public form's autoAccept document skips the review queue.
+          applicationStatus: doc.manifest.autoAccept && !envelope ? 'accepted' : 'pending',
         },
       );
 

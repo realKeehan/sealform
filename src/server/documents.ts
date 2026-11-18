@@ -54,6 +54,11 @@ export interface DocumentManifest {
    * signer and never hashed, so it can be corrected without changing a version.
    */
   parties?: { recipient?: PartyDetails; studio?: PartyDetails[] };
+  /**
+   * Store new submissions as "accepted" instead of "pending", for documents nobody reviews one by one
+   * (an NDA anyone may sign). Operational only: not shown to the signer and never hashed.
+   */
+  autoAccept?: boolean;
 }
 
 /** Prefill details for one party. Every part is optional; the dashboard still asks for anything missing. */
@@ -225,6 +230,7 @@ function validateManifest(value: unknown, where: string): DocumentManifest {
   if (typeof m.public !== 'boolean') fail('public must be true or false');
   if (m.requiredCounterSigners !== undefined && (!Array.isArray(m.requiredCounterSigners) || m.requiredCounterSigners.length < 1 || m.requiredCounterSigners.length > 2 || !m.requiredCounterSigners.every((name) => typeof name === 'string' && name.trim().length > 0 && name.length <= 200) || new Set(m.requiredCounterSigners.map((name) => name.normalize('NFC').trim().toLowerCase())).size !== m.requiredCounterSigners.length)) fail('requiredCounterSigners must name one or two distinct Studio signers');
   if (m.requiredCounterSigners?.length && m.public) fail('requiredCounterSigners are for private contracts only');
+  if (m.autoAccept !== undefined && typeof m.autoAccept !== 'boolean') fail('autoAccept must be true or false');
   if (m.parties !== undefined) validateParties(m.parties, m.public === true, fail);
   if (!m.retention || !DURATION.test(m.retention.signed ?? '') || !DURATION.test(m.retention.unsigned ?? '')) fail('retention.signed and retention.unsigned must be ISO 8601 durations such as P4Y');
 

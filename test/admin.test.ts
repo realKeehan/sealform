@@ -1485,3 +1485,27 @@ test('a manifest with bad party details is refused', async () => {
     }
   }
 });
+
+test('an autoAccept document stores new submissions as accepted; others stay pending', async () => {
+  const { cp, readFile, writeFile } = await import('node:fs/promises');
+  const docs = await mkdtemp(join(tmpdir(), 'sealform-auto-'));
+  await cp(FIXTURES, docs, { recursive: true });
+  const path = join(docs, 'example-agreement', 'EXAMPLE-1', 'document.json');
+  const before = JSON.parse(await readFile(path, 'utf8'));
+  const plain = await start('auto-accept-off');
+  let auto: Awaited<ReturnType<typeof start>> | undefined;
+  try {
+    const off = await sign(plain, 'Pat Pending', 'pending@example.org');
+    assert.equal(plain.sealform.store.summary(off)!.applicationStatus, 'pending');
+    await writeFile(path, JSON.stringify({ ...before, autoAccept: true }));
+    auto = await start('auto-accept-on', { documentsDir: docs });
+    const on = await sign(auto, 'Ann Auto', 'auto@example.org');
+    assert.equal(auto.sealform.store.summary(on)!.applicationStatus, 'accepted');
+    // autoAccept is operational, so it does not change the hash signers' records point to.
+    assert.equal(auto.sealform.documents.get('example-agreement', 'EXAMPLE-1')!.manifestSha256, plain.sealform.documents.get('example-agreement', 'EXAMPLE-1')!.manifestSha256);
+  } finally {
+    await plain.stop();
+    await auto?.stop();
+    await rm(docs, { recursive: true, force: true });
+  }
+});

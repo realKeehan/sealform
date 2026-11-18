@@ -160,6 +160,15 @@ Netherlands and Belgium. They are plain JSON, so adding a country is a file:
 > dashboard flags unreviewed profiles and any older than a year. They are evidence settings, not
 > legal advice.
 
+### Auto-accepting a document's submissions
+
+Every submission starts as `pending` on the dashboard's Submissions page until someone sets it to accepted
+or rejected. For a public document nobody reviews one by one, such as an NDA anyone may sign, set
+`"autoAccept": true` in its `document.json`: new submissions are then stored as `accepted`. It only sets
+the starting status, which can still be changed and is audit-logged as usual. Signatures through private
+contract links always start as `pending`. Like `status`, it is operational: not shown to the signer and not
+hashed, so turning it on does not need a new version.
+
 ### Review links (view only)
 
 To let someone read a document before they sign, make a **review link** from the same **Contracts** page. It
