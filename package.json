@@ -1,6 +1,6 @@
 {
   "name": "sealform",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Self-hosted electronic signatures with a tamper-evident, independently verifiable audit trail.",
   "license": "MIT",
   "author": "Keehan",
