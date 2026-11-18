@@ -58,7 +58,7 @@ export async function renderCertificate(input: PdfInput): Promise<Uint8Array> {
 
   writer.section('Answers', bold);
   writer.pairs(
-    manifest.fields.map((field) => [field.label, formatValue(record.fields[field.name])]),
+    manifest.fields.filter((field) => !(field.recipientOnly && record.envelope?.role === 'countersigner')).map((field) => [field.label, formatValue(record.fields[field.name])]),
     regular,
     bold,
   );

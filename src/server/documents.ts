@@ -20,6 +20,12 @@ export interface FieldSpec {
   help?: string;
   /** signerName: the typed signature must match it. receiptEmail: where the receipt goes. */
   role?: 'signerName' | 'receiptEmail' | 'country';
+  /**
+   * Ask only the recipient of a private contract. The Studio's countersigners never see it and their
+   * records carry no value for it, for example a tax number that only the counterparty gives. It is part
+   * of the hashed manifest, so adding or removing it is a new document version.
+   */
+  recipientOnly?: boolean;
 }
 
 export interface ConsentSpec {
@@ -242,6 +248,9 @@ function validateManifest(value: unknown, where: string): DocumentManifest {
     if (typeof field.label !== 'string' || !field.label) fail(`field ${field.name} needs a label`);
     if (!['text', 'email', 'country', 'select', 'textarea', 'checkbox'].includes(field.type)) fail(`field ${field.name} has unknown type ${String(field.type)}`);
     if (field.type === 'select' && (!Array.isArray(field.options) || field.options.length === 0)) fail(`select field ${field.name} needs options`);
+    if (field.recipientOnly !== undefined && typeof field.recipientOnly !== 'boolean') fail(`field ${field.name}: recipientOnly must be true or false`);
+    if (field.recipientOnly && field.role) fail(`field ${field.name}: a field with a role is needed from every signer, so it cannot be recipientOnly`);
+    if (field.recipientOnly && field.type === 'country') fail(`field ${field.name}: a country field cannot be recipientOnly`);
   }
   for (const role of ['signerName', 'receiptEmail'] as const) {
     if (m.fields!.filter((field) => field.role === role).length > 1) fail(`only one field can have role ${role}`);
