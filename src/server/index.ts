@@ -36,6 +36,7 @@ import { OutboxMailer, type Mailer } from './mailer.ts';
 import { CloudflareAccess, type AccessConfig } from './admin/access.ts';
 import type { Envelope } from './admin/db.ts';
 import { createAdmin } from './admin/index.ts';
+import type { NoticeConfig } from './admin/notices.ts';
 import { renderCertificate } from './pdf.ts';
 import { REVIEW_CSS, REVIEW_HEADERS, reviewPage, reviewStopPage } from './review.ts';
 import { ProfileRegistry, signerVisible as profileVisible } from './profiles.ts';
@@ -92,6 +93,8 @@ export interface SealformConfig {
   adminAccess?: AccessConfig;
   botCheck?: BotCheck;
   mailer?: Mailer;
+  /** Policy change notices to everyone who signed. Needs adminPath. */
+  notices?: NoticeConfig;
   checks?: Map<string, Check>;
   limits?: { signPerWindow?: number; readPerWindow?: number; windowMs?: number };
   sessionTtlMs?: number;
@@ -106,6 +109,8 @@ export interface Sealform {
   documents: DocumentRegistry;
   /** Admin tables, present when adminPath is set. Used by the CLI and tests. */
   admin: AdminStore | undefined;
+  /** Sends queued policy change notices now, within the hourly cap. The server also does this every minute. */
+  sendNotices(max?: number): Promise<number>;
   close(): void;
 }
 
@@ -167,6 +172,7 @@ export async function createSealform(config: SealformConfig): Promise<Sealform> 
         siteParking: config.site ? (on) => site!.setParking(on) : undefined,
         signBase: base,
         mailer,
+        notices: config.notices,
         operator: config.operator,
         botCheck,
         turnstileSiteKey: config.adminTurnstileSiteKey,
@@ -540,7 +546,7 @@ export async function createSealform(config: SealformConfig): Promise<Sealform> 
     );
   };
 
-  return { handler, store, documents, admin: admin?.db, close: () => store.close() };
+  return { handler, store, documents, admin: admin?.db, sendNotices: (max?: number) => admin?.sendNotices(max) ?? Promise.resolve(0), close: () => { admin?.stop(); store.close(); } };
 }
 
 const CONTRACT_HEADERS = {
@@ -651,6 +657,7 @@ export { CloudflareAccess, type AccessConfig, type AccessIdentity } from './admi
 export { AdminStore } from './admin/db.ts';
 export { DocumentRegistry, type DocumentManifest, type FieldSpec, type ConsentSpec, type PartyDetails } from './documents.ts';
 export { NoBotCheck, RateLimiter, TurnstileCheck, type BotCheck } from './guards.ts';
+export { loadDrafts, noticeText, type NoticeConfig, type NoticeDraft } from './admin/notices.ts';
 export { OutboxMailer, toMime, type Mailer, type MailMessage } from './mailer.ts';
 export { SqliteStore, type RecordSummary } from './store.ts';
 export { SiteLayer, normalizePrefix, DEFAULT_PARKING_ALLOW, type SiteConfig } from './site.ts';

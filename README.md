@@ -160,6 +160,47 @@ Netherlands and Belgium. They are plain JSON, so adding a country is a file:
 > dashboard flags unreviewed profiles and any older than a year. They are evidence settings, not
 > legal advice.
 
+### Policy change notices
+
+When the policies your agreements refer to change, the **Notices** page (owners only) emails everyone who
+signed. Configure it with `notices`:
+
+```js
+notices: {
+  mailer,                      // optional; defaults to the main mailer. Use one that sends as `from`.
+  from: 'Example Studio <noreply@example.com>',
+  replyTo: 'legal@example.com',
+  copyTo: ['legal@example.com'], // one copy of each notice, for your records
+  perHour: 60,                 // stay under your mail server's hourly limit
+  minNoticeDays: 30,
+  draftsDir: '/srv/sealform-notices',
+}
+```
+
+Notices are not written on the dashboard. Each one is a draft file in `draftsDir`, written and reviewed
+next to the policies themselves and copied to the server:
+
+```json
+{
+  "id": "2026-12-terms-refunds",
+  "subject": "Changes to our Studio Terms",
+  "policies": [{ "name": "Studio Terms", "url": "https://example.com/terms/" }],
+  "summary": "Plain-language summary of what changed.",
+  "effectiveOn": "2027-01-15"
+}
+```
+
+The file name must be `<id>.json`. The Notices page lists drafts not yet sent with the exact email text and
+the number of recipients, and reports any file it cannot use. Approving one needs a confirmation, and a
+written reason when the effective date is less than `minNoticeDays` away. It is audit-logged and can happen
+only once per draft id.
+
+Recipients are every distinct email on a signed record that is not withdrawn or tombstoned, plus `copyTo`.
+Each person gets their own plain-text email: no shared To or BCC list, no tracking, no images. The queue is
+kept in the database and sent at most `perHour` per rolling hour, once a minute and right after approval, so
+a restart resumes where it stopped. A delivery that fails three times is marked failed and can be retried
+from the page.
+
 ### Auto-accepting a document's submissions
 
 Every submission starts as `pending` on the dashboard's Submissions page until someone sets it to accepted

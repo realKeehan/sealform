@@ -29,6 +29,7 @@ import {
 import { accessToken, type AccessIdentity, type CloudflareAccess } from './access.ts';
 import { AdminStore, ROLES, type Account, type AdminSession, type Envelope, type ReviewLink, type Role } from './db.ts';
 import type { Mailer } from '../mailer.ts';
+import { loadDrafts, noticeText, NoticeStore, sendQueued, type NoticeConfig } from './notices.ts';
 import { csrfField, html, layout, raw, shortDate, type Raw } from './html.ts';
 import { renderDocumentMarkdown } from './markdown.ts';
 
@@ -51,6 +52,8 @@ export interface AdminOptions {
   signBase: string;
   mailer: Mailer;
   operator: { name: string; email: string };
+  /** Policy change notices to signers; the Notices page appears only when set. */
+  notices: NoticeConfig | undefined;
   /** Checked on the sign-in form before any password work, so bots cannot probe or lock accounts. */
   botCheck: BotCheck;
   /** Public Turnstile site key; the widget is shown on the sign-in page when set. */
@@ -71,6 +74,7 @@ export const APPLICATION_STATUSES = ['pending', 'accepted', 'rejected', 'withdra
 
 const MESSAGES: Record<string, { kind: 'ok' | 'error'; text: string }> = {
   saved: { kind: 'ok', text: 'Saved.' },
+  noticequeued: { kind: 'ok', text: 'Approved. The notice is being sent at the hourly limit; progress is below.' },
   password: { kind: 'ok', text: 'Password changed. Other sessions were signed out.' },
   totp: { kind: 'ok', text: 'Two-factor sign-in is on.' },
   totpoff: { kind: 'ok', text: 'Two-factor sign-in is off.' },
@@ -104,6 +108,21 @@ export async function createAdmin(options: AdminOptions) {
   let css: string | undefined;
 
   const nowIso = () => options.now().toISOString();
+
+  // Policy change notices. The timer sends what the hourly cap allows; the queue lives in the database.
+  const notices = options.notices ? new NoticeStore(store.database) : undefined;
+  let sending: Promise<number> | undefined;
+  const sendNotices = (max?: number): Promise<number> => {
+    if (!notices || !options.notices) return Promise.resolve(0);
+    // One run at a time, so a slow mail server never gets the same email twice.
+    sending ??= sendQueued({ notices, config: options.notices, mailer: options.notices.mailer ?? options.mailer, operatorName: options.operatorName, now: options.now, log: options.log, ...(max === undefined ? {} : { max }) }).finally(() => {
+      sending = undefined;
+    });
+    return sending;
+  };
+  const logSendError = (e: unknown) => options.log(`notice sender: ${e instanceof Error ? e.message : String(e)}`);
+  const noticeTimer = notices ? setInterval(() => void sendNotices().catch(logSendError), 60_000) : undefined;
+  noticeTimer?.unref();
   const actorOf = (ctx: Ctx) => (ctx.account ? { id: ctx.account.id, email: ctx.account.email } : ('system' as const));
   const audit = (ctx: Ctx, action: string, target: string, details: Record<string, JsonValue> = {}) =>
     db.audit(options.sealingKey, { at: nowIso(), actor: actorOf(ctx), action, target, details, ip: ctx.ip });
@@ -164,6 +183,7 @@ export async function createAdmin(options: AdminOptions) {
       nav,
       flash,
       operatorName: options.operatorName,
+      notices: !!options.notices,
       // A session that has only passed the password step gets the bare page, not the admin nav.
       ...(ctx.account && ctx.session?.stage === 'active' ? { user: { email: ctx.account.email, role: ctx.account.role } } : {}),
       ...(ctx.session?.stage === 'active' ? { csrf: ctx.session.csrf } : {}),
@@ -796,6 +816,106 @@ export async function createAdmin(options: AdminOptions) {
       throw new HttpError(404, 'Not found');
     }
     redirect(ctx, '/site?m=saved');
+  }
+
+  // Notices: policy change emails to signers -------------------------------------------------------
+
+  function noticeSetup(ctx: Ctx): { store: NoticeStore; config: NoticeConfig } {
+    need(ctx, 'owner');
+    if (!notices || !options.notices) throw new HttpError(404, 'Notices are not configured');
+    return { store: notices, config: options.notices };
+  }
+
+  /** Whole days from today (UTC) to a YYYY-MM-DD date. */
+  function daysUntil(day: string): number {
+    const today = Date.parse(`${nowIso().slice(0, 10)}T00:00:00Z`);
+    return Math.round((Date.parse(`${day}T00:00:00Z`) - today) / 86_400_000);
+  }
+
+  function noticeRecipients(store: NoticeStore, config: NoticeConfig): string[] {
+    return [...new Set([...store.signerEmails(), ...(config.copyTo ?? []).map((e) => e.toLowerCase())])];
+  }
+
+  async function noticesPage(ctx: Ctx): Promise<void> {
+    const { store, config } = noticeSetup(ctx);
+    const csrf = csrfField(ctx.session!.csrf);
+    const { drafts, problems } = await loadDrafts(config.draftsDir);
+    const done = new Set(store.list().map((n) => n.source));
+    const waiting = drafts.filter((d) => !done.has(d.id));
+    const recipients = noticeRecipients(store, config).length;
+    const min = config.minNoticeDays ?? 30;
+    const plural = (n: number) => (n === 1 ? 'address' : 'addresses');
+    page(
+      ctx,
+      'Notices',
+      'notices',
+      html`<h1>Notices</h1>
+      <p class="muted">Policy change notices are written and synced from the policy repository. Nothing is emailed until you approve one here. Each person gets their own email from ${config.from}, at most ${config.perHour ?? 60} an hour${config.copyTo?.length ? `, and ${config.copyTo.join(', ')} gets a copy` : ''}. Right now that is <strong>${recipients}</strong> ${plural(recipients)}.</p>
+      ${problems.length ? html`<section class="card notice" role="alert"><h2>Draft files with problems</h2><ul>${problems.map((p) => html`<li>${p}</li>`)}</ul></section>` : ''}
+      <h2>Waiting for approval</h2>
+      ${waiting.length
+        ? waiting.map((d) => {
+            const days = daysUntil(d.effectiveOn);
+            const short = days < min;
+            return html`<section class="card">
+          <h3>${d.subject}</h3>
+          <p class="muted">${d.id} · takes effect ${d.effectiveOn}, ${days} days from today${short ? html` · <strong>less than ${min} days of notice</strong>` : ''}</p>
+          <details><summary>The email</summary><pre class="email">${noticeText(d, options.operatorName, config.replyTo)}</pre></details>
+          ${days < 0
+            ? html`<p class="flash flash--error">The effective date has passed. Change it in the draft and sync it again.</p>`
+            : html`<form method="post" action="${base}/notices/approve" class="stack narrow">${csrf}
+              <input type="hidden" name="draft" value="${d.id}">
+              ${short ? html`<label>Reason for less than ${min} days of notice (kept in the audit log) <input name="reason" required maxlength="300"></label>` : ''}
+              <label class="check"><input type="checkbox" name="confirm" value="1" required> I read the email and the date is right</label>
+              <button type="submit">Approve and send to ${recipients} ${plural(recipients)}</button>
+            </form>`}
+        </section>`;
+          })
+        : html`<p class="muted">No drafts are waiting.</p>`}
+      <h2>Sent</h2>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Notice</th><th>Approved</th><th>Takes effect</th><th>Sent</th><th>Failed</th><th></th></tr></thead>
+        <tbody>${store.list().map((n) => html`<tr>
+          <td>${n.subject}<br><span class="muted">${n.source}</span></td>
+          <td>${shortDate(n.createdAt)} by ${n.createdBy}</td>
+          <td>${n.effectiveOn}</td>
+          <td>${n.sent} of ${n.total}</td>
+          <td>${n.failed}</td>
+          <td>${n.failed ? html`<form method="post" action="${base}/notices/${n.id}/retry" class="inline">${csrf}<button type="submit">Retry failed</button></form>` : ''}</td>
+        </tr>`)}</tbody>
+      </table></div>`,
+    );
+  }
+
+  async function approveNotice(ctx: Ctx): Promise<void> {
+    const { store, config } = noticeSetup(ctx);
+    const form = await readForm(ctx);
+    checkPost(ctx, form);
+    if (form.get('confirm') !== '1') throw new HttpError(400, 'Confirm that you read the email');
+    const { drafts } = await loadDrafts(config.draftsDir);
+    const draft = drafts.find((d) => d.id === form.get('draft'));
+    if (!draft) throw new HttpError(404, 'No such draft, or its file has a problem');
+    if (store.list().some((n) => n.source === draft.id)) throw new HttpError(409, 'This notice was already approved');
+    const days = daysUntil(draft.effectiveOn);
+    const min = config.minNoticeDays ?? 30;
+    const reason = (form.get('reason') ?? '').trim().slice(0, 300);
+    if (days < 0) throw new HttpError(400, 'The effective date has passed');
+    if (days < min && !reason) throw new HttpError(400, `Give a reason for less than ${min} days of notice`);
+    const notice = store.create({ source: draft.id, subject: draft.subject, summary: draft.summary, policies: draft.policies, effectiveOn: draft.effectiveOn, createdBy: ctx.account!.email, createdAt: nowIso(), recipients: noticeRecipients(store, config) });
+    await audit(ctx, 'notice.approve', notice.id, { source: draft.id, subject: draft.subject, effectiveOn: draft.effectiveOn, recipients: notice.total, daysNotice: days, shortNoticeReason: reason || null });
+    void sendNotices().catch(logSendError);
+    redirect(ctx, '/notices?m=noticequeued');
+  }
+
+  async function retryNotice(ctx: Ctx, id: string): Promise<void> {
+    const { store } = noticeSetup(ctx);
+    const form = await readForm(ctx);
+    checkPost(ctx, form);
+    if (!store.get(id)) throw new HttpError(404, 'No such notice');
+    const count = store.retryFailed(id);
+    await audit(ctx, 'notice.retry', id, { deliveries: count });
+    void sendNotices().catch(logSendError);
+    redirect(ctx, '/notices?m=saved');
   }
 
   // Contracts: private signing links ---------------------------------------------------------------
@@ -1463,6 +1583,7 @@ export async function createAdmin(options: AdminOptions) {
         else if (path === '/documents') documentsPage(ctx);
         else if (path === '/contracts') contractsPage(ctx);
         else if (path === '/site') await sitePage(ctx);
+        else if (path === '/notices') await noticesPage(ctx);
         else if (parts[0] === 'contracts' && parts.length === 2) contractPage(ctx, db.envelope(parts[1]!) ?? (() => { throw new HttpError(404, 'No such contract'); })());
         else if (parts[0] === 'documents' && parts.length === 3) documentPage(ctx, findDoc(parts[1]!, parts[2]!));
         else if (path === '/accounts') accountsPage(ctx);
@@ -1479,6 +1600,8 @@ export async function createAdmin(options: AdminOptions) {
         else if (parts[0] === 'documents' && parts.length === 4 && parts[3] === 'status') await setDocumentStatus(ctx, findDoc(parts[1]!, parts[2]!));
         else if (path === '/contracts') await createContract(ctx);
         else if (path === '/review-links') await createReviewLink(ctx);
+        else if (path === '/notices/approve') await approveNotice(ctx);
+        else if (parts[0] === 'notices' && parts.length === 3 && parts[2] === 'retry') await retryNotice(ctx, parts[1]!);
         else if (parts[0] === 'review-links' && parts.length === 3) await reviewLinkAction(ctx, parts[1]!, parts[2]!);
         else if (parts[0] === 'site' && parts.length >= 2) await siteAction(ctx, parts.slice(1).join('/'));
         else if (parts[0] === 'contracts' && parts.length === 3) await contractAction(ctx, parts[1]!, parts[2]!);
@@ -1517,7 +1640,7 @@ export async function createAdmin(options: AdminOptions) {
     return !!account && !account.disabled;
   }
 
-  return { route, db, isSignedIn };
+  return { route, db, isSignedIn, notices, sendNotices, stop: () => clearInterval(noticeTimer) };
 }
 
 /** "2026-11-16 13:05 UTC": a document version's last-edited time for the dashboard. Empty when unknown. */

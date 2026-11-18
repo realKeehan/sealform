@@ -269,6 +269,10 @@ textarea {
 .length input:not([type='hidden']) {
   width: 8rem;
 }
+pre.email {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 label.check {
   display: flex;
   align-items: center;

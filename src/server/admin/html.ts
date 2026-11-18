@@ -53,6 +53,8 @@ export interface LayoutInput {
   script?: string;
   flash?: { kind: 'ok' | 'error'; text: string } | undefined;
   operatorName: string;
+  /** Show the Notices link (policy change notices are configured). */
+  notices?: boolean;
 }
 
 export function layout(input: LayoutInput): string {
@@ -81,6 +83,7 @@ ${input.script ? html`<script src="${input.script}" defer></script>` : ''}
     ${role !== 'reviewer' ? link('/contracts', 'Contracts', 'contracts') : ''}
     ${role === 'owner' ? link('/accounts', 'Accounts', 'accounts') : ''}
     ${role === 'owner' ? link('/site', 'Site', 'site') : ''}
+    ${role === 'owner' && input.notices ? link('/notices', 'Notices', 'notices') : ''}
     ${link('/sign-ins', 'Sign-ins', 'sign-ins')}
     ${role === 'owner' ? link('/audit', 'Audit log', 'audit') : ''}
     ${link('/account', 'My account', 'account')}
