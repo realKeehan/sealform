@@ -1534,6 +1534,8 @@ test('policy notices: drafts are approved on the dashboard, then each signer get
     await writeFile(join(drafts, 'terms-update.json'), JSON.stringify(draft));
     await writeFile(join(drafts, 'broken.json'), JSON.stringify({ ...draft, id: 'other-name' }));
     await writeFile(join(drafts, 'soon.json'), JSON.stringify({ ...draft, id: 'soon', effectiveOn: day(5) }));
+    const { effectiveOn: _unused, ...undated } = draft;
+    await writeFile(join(drafts, 'today.json'), JSON.stringify({ ...undated, id: 'today' }));
 
     const owner = await ownerSession(app);
     const pageText = (await owner.get('/notices')).text;
@@ -1542,6 +1544,7 @@ test('policy notices: drafts are approved on the dashboard, then each signer get
     assert.match(pageText, /<strong>3<\/strong> addresses/, 'two signers once each, plus the copy');
     assert.match(pageText, /We added a section on refunds\./);
     assert.match(pageText, /Reason for less than 30 days/);
+    assert.match(pageText, /today · takes effect the day you approve it/);
     assert.equal(sent.length, 0, 'nothing is sent before approval');
 
     const csrf = await owner.csrf('/notices');
@@ -1559,9 +1562,11 @@ test('policy notices: drafts are approved on the dashboard, then each signer get
       assert.equal(m.replyTo, 'legal@example.com');
       assert.match(m.text, /We added a section on refunds\./);
       assert.match(m.text, /Studio Terms: https:\/\/example\.com\/terms\//);
+      assert.match(m.text, /we're making changes to our Studio Terms\. Here's what's changing:/);
+      assert.match(m.text, /Thank you for being part of Example Studio!/);
     }
     assert.equal((await owner.post('/notices/approve', { csrf, draft: 'terms-update', confirm: '1' })).status, 409, 'once only');
-    assert.doesNotMatch((await owner.get('/notices')).text, /Approve and send[^<]*<\/button>\s*<\/form>\s*<\/section>\s*<section class="card">\s*<h3>Changes to our terms/);
+    assert.doesNotMatch((await owner.get('/notices')).text, /name="draft" value="terms-update"/, 'an approved draft leaves the waiting list');
 
     // A failing address is retried, then marked failed, and can be queued again.
     failFor = 'bo@example.org';

@@ -855,12 +855,13 @@ export async function createAdmin(options: AdminOptions) {
       <h2>Waiting for approval</h2>
       ${waiting.length
         ? waiting.map((d) => {
-            const days = daysUntil(d.effectiveOn);
+            const effectiveOn = d.effectiveOn ?? nowIso().slice(0, 10);
+            const days = daysUntil(effectiveOn);
             const short = days < min;
             return html`<section class="card">
           <h3>${d.subject}</h3>
-          <p class="muted">${d.id} · takes effect ${d.effectiveOn}, ${days} days from today${short ? html` · <strong>less than ${min} days of notice</strong>` : ''}</p>
-          <details><summary>The email</summary><pre class="email">${noticeText(d, options.operatorName, config.replyTo)}</pre></details>
+          <p class="muted">${d.id} · takes effect ${d.effectiveOn ? html`${d.effectiveOn}, ${days} days from today` : 'the day you approve it'}${short ? html` · <strong>less than ${min} days of notice</strong>` : ''}</p>
+          <details><summary>The email</summary><pre class="email">${noticeText({ ...d, effectiveOn }, options.operatorName, config.replyTo)}</pre></details>
           ${days < 0
             ? html`<p class="flash flash--error">The effective date has passed. Change it in the draft and sync it again.</p>`
             : html`<form method="post" action="${base}/notices/approve" class="stack narrow">${csrf}
@@ -896,13 +897,14 @@ export async function createAdmin(options: AdminOptions) {
     const draft = drafts.find((d) => d.id === form.get('draft'));
     if (!draft) throw new HttpError(404, 'No such draft, or its file has a problem');
     if (store.list().some((n) => n.source === draft.id)) throw new HttpError(409, 'This notice was already approved');
-    const days = daysUntil(draft.effectiveOn);
+    const effectiveOn = draft.effectiveOn ?? nowIso().slice(0, 10);
+    const days = daysUntil(effectiveOn);
     const min = config.minNoticeDays ?? 30;
     const reason = (form.get('reason') ?? '').trim().slice(0, 300);
     if (days < 0) throw new HttpError(400, 'The effective date has passed');
     if (days < min && !reason) throw new HttpError(400, `Give a reason for less than ${min} days of notice`);
-    const notice = store.create({ source: draft.id, subject: draft.subject, summary: draft.summary, policies: draft.policies, effectiveOn: draft.effectiveOn, createdBy: ctx.account!.email, createdAt: nowIso(), recipients: noticeRecipients(store, config) });
-    await audit(ctx, 'notice.approve', notice.id, { source: draft.id, subject: draft.subject, effectiveOn: draft.effectiveOn, recipients: notice.total, daysNotice: days, shortNoticeReason: reason || null });
+    const notice = store.create({ source: draft.id, subject: draft.subject, summary: draft.summary, policies: draft.policies, effectiveOn, createdBy: ctx.account!.email, createdAt: nowIso(), recipients: noticeRecipients(store, config) });
+    await audit(ctx, 'notice.approve', notice.id, { source: draft.id, subject: draft.subject, effectiveOn, recipients: notice.total, daysNotice: days, shortNoticeReason: reason || null });
     void sendNotices().catch(logSendError);
     redirect(ctx, '/notices?m=noticequeued');
   }

@@ -33,8 +33,8 @@ export interface NoticeDraft {
   subject: string;
   policies: { name: string; url: string }[];
   summary: string;
-  /** YYYY-MM-DD */
-  effectiveOn: string;
+  /** YYYY-MM-DD. Left out, the change takes effect the day the notice is approved. */
+  effectiveOn?: string;
 }
 
 export interface Notice {
@@ -196,27 +196,31 @@ function draftProblem(d: Partial<NoticeDraft>, file: string): string | null {
   if (typeof d.subject !== 'string' || !d.subject.trim() || d.subject.length > 150 || /[\r\n]/.test(d.subject)) return 'subject must be one line of 1 to 150 characters';
   if (!Array.isArray(d.policies) || !d.policies.length || d.policies.length > 10 || !d.policies.every((p) => p && typeof p.name === 'string' && p.name.trim() && typeof p.url === 'string' && /^https:\/\/[^\s]+$/.test(p.url))) return 'policies must list 1 to 10 entries with a name and an https url';
   if (typeof d.summary !== 'string' || !d.summary.trim() || d.summary.length > 4000) return 'summary must be 1 to 4000 characters';
-  if (typeof d.effectiveOn !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(d.effectiveOn) || Number.isNaN(Date.parse(`${d.effectiveOn}T00:00:00Z`))) return 'effectiveOn must be a date like 2026-12-31';
+  if (d.effectiveOn !== undefined && (typeof d.effectiveOn !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(d.effectiveOn) || Number.isNaN(Date.parse(`${d.effectiveOn}T00:00:00Z`)))) return 'effectiveOn, when given, must be a date like 2026-12-31';
   return null;
 }
 
-/** The email text. Plain text only: no tracking, no images, no links but the policies and the contact. */
-export function noticeText(notice: Pick<Notice, 'summary' | 'policies' | 'effectiveOn'>, operatorName: string, replyTo: string): string {
+/** The email text: plain text, no tracking or images, in the style of a short product update. */
+export function noticeText(notice: { summary: string; policies: { name: string; url: string }[]; effectiveOn: string }, operatorName: string, replyTo: string): string {
   const date = new Date(`${notice.effectiveOn}T00:00:00Z`).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric', timeZone: 'UTC' });
+  const names = notice.policies.map((p) => p.name);
+  const list = names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names.at(-1)}` : names[0];
+  const one = notice.policies.length === 1;
   return [
     'Hello,',
     '',
-    `${operatorName} is updating ${notice.policies.length === 1 ? 'this policy' : 'these policies'}:`,
-    ...notice.policies.map((p) => `- ${p.name}: ${p.url}`),
+    `On ${date}, we're making changes to our ${list}. Here's what's changing:`,
     '',
-    'What is changing:',
     notice.summary.trim(),
     '',
-    `The changes take effect on ${date} and apply from then on, not to anything before that date. Your agreement with ${operatorName} explains what you can do if you do not accept them, such as ending your participation.`,
+    `You can read the updated ${one ? 'version' : 'versions'} here:`,
+    ...notice.policies.map((p) => `- ${p.name}: ${p.url}`),
     '',
-    `You are receiving this because you signed an agreement with ${operatorName} that refers to these policies. It is a notice about that agreement, not marketing, so everyone who signed receives it.`,
+    `You are getting this email because you signed an agreement with ${operatorName}. Where your agreement includes our policies, the changes apply to you from ${date}, as it explains, and never to anything before then. If you do not agree, you can stop working with us or taking part at any time.`,
     '',
-    `Replies to this address are not read. Questions: ${replyTo}`,
+    `This is a notice about your agreement, not marketing. Replies to this address are not read. Questions: ${replyTo}`,
+    '',
+    `Thank you for being part of ${operatorName}!`,
   ].join('\n');
 }
 

@@ -190,7 +190,7 @@ next to the policies themselves and copied to the server:
 }
 ```
 
-The file name must be `<id>.json`. The Notices page lists drafts not yet sent with the exact email text and
+Leave out `effectiveOn` and the change takes effect the day the notice is approved. The file name must be `<id>.json`. The Notices page lists drafts not yet sent with the exact email text and
 the number of recipients, and reports any file it cannot use. Approving one needs a confirmation, and a
 written reason when the effective date is less than `minNoticeDays` away. It is audit-logged and can happen
 only once per draft id.
